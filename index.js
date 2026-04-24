@@ -1,103 +1,105 @@
-require('dotenv').config();
-const { Telegraf, Markup } = require('telegraf');
-const { initDB, addUser, logFridaRun } = require('./database');
-const { runFridaScript } = require('./fridaClient');
+import logging
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from config import TOKEN, FRIDA_AGENTS
+from database import db
+from frida_client import run_frida_script
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+logging.basicConfig(level=logging.INFO)
 
-// دالة للحصول على قائمة الأجهزة
-function getDevicesList() {
-  try {
-    const agents = JSON.parse(process.env.FRIDA_AGENTS || '{}');
-    return Object.keys(agents);
-  } catch {
-    return [];
-  }
-}
+# الأزرار الرئيسية
+def main_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📱 عرض الأجهزة", callback_data="show_devices")],
+        [InlineKeyboardButton("🚀 تشغيل Frida", callback_data="run_frida_menu")],
+        [InlineKeyboardButton("📊 عدد المستخدمين", callback_data="users_count")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-// لوحة التحكم الرئيسية
-function mainMenu() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('📱 عرض الأجهزة', 'show_devices')],
-    [Markup.button.callback('🚀 تشغيل Frida', 'run_frida_menu')],
-    [Markup.button.callback('📊 عدد المستخدمين', 'users_count')]
-  ]);
-}
+def back_button():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]])
 
-// زر رجوع
-function backButton() {
-  return Markup.inlineKeyboard([Markup.button.callback('🔙 رجوع', 'main_menu')]);
-}
+# قائمة الأجهزة
+def get_devices():
+    return list(FRIDA_AGENTS.keys())
 
-bot.start(async (ctx) => {
-  const user = ctx.from;
-  await addUser(user.id, user.username, user.first_name);
-  await ctx.reply('🔧 لوحة تحكم البوت:', mainMenu());
-});
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await db.add_user(user.id, user.username, user.first_name)
+    await update.message.reply_text("🔧 لوحة تحكم البوت:", reply_markup=main_keyboard())
 
-bot.action('main_menu', async (ctx) => {
-  await ctx.editMessageText('🔧 لوحة تحكم البوت:', mainMenu());
-});
+async def show_devices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    devices = get_devices()
+    if not devices:
+        await query.edit_message_text("❌ لا توجد أجهزة.", reply_markup=back_button())
+        return
+    keyboard = [[InlineKeyboardButton(f"📱 {d}", callback_data=f"select_{d}")] for d in devices]
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+    await query.edit_message_text("📱 الأجهزة:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-bot.action('show_devices', async (ctx) => {
-  const devices = getDevicesList();
-  if (!devices.length) {
-    await ctx.editMessageText('❌ لا توجد أجهزة مسجلة.', backButton());
-    return;
-  }
-  const buttons = devices.map(d => [Markup.button.callback(`📱 ${d}`, `select_${d}`)]);
-  buttons.push([Markup.button.callback('🔙 رجوع', 'main_menu')]);
-  await ctx.editMessageText('📱 الأجهزة المتاحة:', Markup.inlineKeyboard(buttons));
-});
+async def run_frida_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    devices = get_devices()
+    if not devices:
+        await query.edit_message_text("❌ لا توجد أجهزة.", reply_markup=back_button())
+        return
+    keyboard = [[InlineKeyboardButton(f"▶️ {d}", callback_data=f"run_{d}")] for d in devices]
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+    await query.edit_message_text("اختر جهازاً:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-bot.action('run_frida_menu', async (ctx) => {
-  const devices = getDevicesList();
-  if (!devices.length) {
-    await ctx.editMessageText('❌ لا توجد أجهزة. أضفها في متغير FRIDA_AGENTS.', backButton());
-    return;
-  }
-  const buttons = devices.map(d => [Markup.button.callback(`▶️ ${d}`, `run_${d}`)]);
-  buttons.push([Markup.button.callback('🔙 رجوع', 'main_menu')]);
-  await ctx.editMessageText('اختر جهازاً لتشغيل السكريبت:', Markup.inlineKeyboard(buttons));
-});
+async def users_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    async with db.pool.acquire() as conn:
+        count = await conn.fetchval("SELECT COUNT(*) FROM users")
+    await query.edit_message_text(f"👥 المستخدمون: {count}", reply_markup=back_button())
 
-bot.action('users_count', async (ctx) => {
-  try {
-    const { rows } = await require('./database').pool.query('SELECT COUNT(*) FROM users');
-    const count = rows[0].count;
-    await ctx.editMessageText(`👥 عدد المستخدمين: ${count}`, backButton());
-  } catch (err) {
-    await ctx.editMessageText('خطأ في جلب العدد', backButton());
-  }
-});
+async def run_frida_device(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    device = query.data.split("_")[1]
+    user_id = query.from_user.id
+    await query.edit_message_text(f"⏳ جاري التشغيل على {device}...")
+    result = await run_frida_script(device, user_id)
+    status = "success" if result.startswith("✅") else "failed"
+    await db.log_frida_run(user_id, device, status, result)
+    # إرسال النتيجة مع زر رجوع
+    await query.message.reply_text(result, reply_markup=back_button())
 
-// معالج اختيار جهاز للعرض
-bot.action(/^select_(.*)/, async (ctx) => {
-  const device = ctx.match[1];
-  const agents = JSON.parse(process.env.FRIDA_AGENTS || '{}');
-  const url = agents[device];
-  await ctx.editMessageText(`📱 الجهاز: ${device}\n🌐 العنوان: ${url}`, backButton());
-});
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("🔧 لوحة التحكم:", reply_markup=main_keyboard())
 
-// تشغيل Frida على جهاز
-bot.action(/^run_(.*)/, async (ctx) => {
-  const device = ctx.match[1];
-  const userId = ctx.from.id;
-  await ctx.editMessageText(`⏳ جاري تشغيل السكريبت على ${device} ...`);
-  const result = await runFridaScript(device, userId);
-  const status = result.startsWith('✅') ? 'success' : 'failed';
-  await logFridaRun(userId, device, status, result);
-  await ctx.reply(result, backButton());
-});
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = update.callback_query.data
+    if data == "main_menu":
+        await main_menu(update, context)
+    elif data == "show_devices":
+        await show_devices(update, context)
+    elif data == "run_frida_menu":
+        await run_frida_menu(update, context)
+    elif data == "users_count":
+        await users_count(update, context)
+    elif data.startswith("select_"):
+        device = data.split("_")[1]
+        url = FRIDA_AGENTS.get(device, "غير معروف")
+        await update.callback_query.edit_message_text(f"جهاز: {device}\nالعنوان: {url}", reply_markup=back_button())
+    elif data.startswith("run_"):
+        await run_frida_device(update, context)
 
-// بدء البوت
-async function main() {
-  await initDB();
-  console.log('✅ قاعدة البيانات جاهزة');
-  await bot.launch();
-  console.log('🚀 البوت يعمل...');
-}
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(handle_button))
+    app.run_polling()
 
-main();
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(db.connect())
+    main()
