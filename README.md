@@ -1,15 +1,22 @@
-# Telegram Bot + Frida (Node.js)
+# Railway Telegram Bot - Fixed Buttons
 
-## النشر على Railway
+## Variables المطلوبة في Railway
 
-1. ارفع الملفات إلى GitHub.
-2. في Railway: New Project → Deploy from GitHub.
-3. أضف المتغيرات:
-   - `BOT_TOKEN`
-   - `DATABASE_URL` (بعد إضافة PostgreSQL عبر Provision)
-   - `FRIDA_AGENTS` = `{"myphone":"http://IP:5000"}`
-4. سيتم التشغيل تلقائياً.
+BOT_TOKEN=توكن_البوت_من_BotFather
+DATABASE_URL=ينضاف تلقائياً بعد ربط PostgreSQL
+FRIDA_AGENTS={"myphone":"http://IP:5000"}
 
-## تحديث السكريبت
+## التشغيل
 
-يمكنك تعديل `hook_1m.js` مباشرة في المستودع، ثم دفع التغييرات إلى GitHub، وسيعيد Railway نشر البوت تلقائياً.
+Railway سيشغل:
+
+npm install
+npm start
+
+## سبب المشكلة القديمة
+
+ملف index.js كان يحتوي كود Python، بينما package.json يشغل Node.js:
+
+node index.js
+
+لذلك الأزرار لا تظهر أو البوت يتوقف.

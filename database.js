@@ -1,8 +1,12 @@
 const { Pool } = require('pg');
 
+if (!process.env.DATABASE_URL) {
+  console.warn('⚠️ DATABASE_URL غير موجود. تأكد من ربط PostgreSQL في Railway.');
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
 async function initDB() {
@@ -13,6 +17,7 @@ async function initDB() {
       first_name TEXT,
       registered_at TIMESTAMP DEFAULT NOW()
     );
+
     CREATE TABLE IF NOT EXISTS frida_logs (
       id SERIAL PRIMARY KEY,
       user_id BIGINT,
@@ -26,17 +31,26 @@ async function initDB() {
 
 async function addUser(userId, username, firstName) {
   await pool.query(
-    `INSERT INTO users (user_id, username, first_name) VALUES ($1, $2, $3)
-     ON CONFLICT (user_id) DO NOTHING`,
-    [userId, username, firstName]
+    `INSERT INTO users (user_id, username, first_name)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id) DO UPDATE
+     SET username = EXCLUDED.username,
+         first_name = EXCLUDED.first_name`,
+    [userId, username || null, firstName || null]
   );
 }
 
-async function logFridaRun(userId, deviceId, status, result) {
+async function getUsersCount() {
+  const result = await pool.query('SELECT COUNT(*)::int AS count FROM users');
+  return result.rows[0].count;
+}
+
+async function logFridaRun(userId, deviceId, status, resultText) {
   await pool.query(
-    `INSERT INTO frida_logs (user_id, device_id, status, result) VALUES ($1,$2,$3,$4)`,
-    [userId, deviceId, status, result]
+    `INSERT INTO frida_logs (user_id, device_id, status, result)
+     VALUES ($1, $2, $3, $4)`,
+    [userId, deviceId, status, resultText]
   );
 }
 
-module.exports = { initDB, addUser, logFridaRun, pool };
+module.exports = { pool, initDB, addUser, getUsersCount, logFridaRun };
