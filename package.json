@@ -1,0 +1,20 @@
+{
+  "name": "telegram-gpt-aide-bot",
+  "version": "1.0.0",
+  "description": "Bilingual Telegram bot interface for gpt.aide.freespaces.app with Railway PostgreSQL storage.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "telegraf": "^4.16.3"
+  }
+}
