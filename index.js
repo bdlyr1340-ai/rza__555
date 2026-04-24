@@ -7,113 +7,96 @@ const { Pool } = pg;
 
 /*
   ============================================================
-  عدّل هنا فقط أغلب الأشياء التي تحتاجها مستقبلاً
+  مساعد الدفع - Telegram Payment Assistant
+  عدّل هذا القسم فقط مستقبلاً: النصوص، طرق الدفع، الروابط، التعليمات
   ============================================================
 */
 const APP_CONFIG = {
   projectName: {
-    ar: 'مساعد GPT للدفع والخدمات',
-    en: 'GPT Payment & Services Assistant'
+    ar: 'مساعد الدفع',
+    en: 'Payment Assistant'
   },
 
   siteUrl: process.env.SITE_URL || 'https://gpt.aide.freespaces.app/',
   supportUrl: process.env.SUPPORT_URL || 'https://t.me/t4i44s',
   defaultLanguage: 'ar',
 
-  // عدّل المنتجات حسب نظام الموقع الحقيقي
-  products: [
-    {
-      id: 'gpt_super',
-      name: { ar: 'اشتراك GPT Super', en: 'GPT Super Subscription' },
-      description: {
-        ar: 'خدمة GPT حسب المتوفر في الموقع. يتم تأكيد الطلب من الإدارة.',
-        en: 'GPT service based on site availability. Order is confirmed by admin.'
-      },
-      priceText: { ar: 'حسب السعر الحالي', en: 'Based on current price' }
-    },
-    {
-      id: 'gpt_account',
-      name: { ar: 'حساب GPT', en: 'GPT Account' },
-      description: {
-        ar: 'صيغة التسليم حسب المنتج: mail | password إن كان متوفراً.',
-        en: 'Delivery format depends on product: mail | password if available.'
-      },
-      priceText: { ar: 'حسب السعر الحالي', en: 'Based on current price' }
-    },
-    {
-      id: 'balance_topup',
-      name: { ar: 'شحن رصيد', en: 'Balance Top-up' },
-      description: {
-        ar: 'ارسل رمز التحويل ورمز الملاحظة حتى يتم الشحن تلقائياً أو مراجعته.',
-        en: 'Send transfer code and memo/note code so your balance can be topped up or reviewed.'
-      },
-      priceText: { ar: 'حسب المبلغ', en: 'Custom amount' }
-    }
-  ],
-
+  // طرق الدفع: عدّل العناوين والتفاصيل من هنا فقط
   paymentMethods: [
-    {
-      id: 'usdt_trc20',
-      title: { ar: 'USDT TRC20', en: 'USDT TRC20' },
-      details: {
-        ar: 'ضع هنا عنوان محفظتك. مهم جداً: أرسل رمز التحويل ورمز الملاحظة.',
-        en: 'Put your wallet address here. Important: send transfer code and memo/note code.'
-      }
-    },
     {
       id: 'binance_pay',
       title: { ar: 'Binance Pay', en: 'Binance Pay' },
       details: {
-        ar: 'ضع هنا Binance Pay ID أو رابط الدفع.',
-        en: 'Put your Binance Pay ID or payment link here.'
+        ar: `💳 طريقة الدفع: Binance Pay\n\nاكتب هنا Binance Pay ID أو رابط الدفع الخاص بيك.\n\n⚠️ مهم جداً:\nبعد الدفع لازم ترسل:\n1) رمز التحويل\n2) رمز الملاحظة / Note / Memo\nحتى يتم التحقق من طلبك بسرعة.`,
+        en: `💳 Payment method: Binance Pay\n\nPut your Binance Pay ID or payment link here.\n\n⚠️ Important:\nAfter payment, send:\n1) Transfer code\n2) Note / Memo code\nso your order can be verified quickly.`
+      }
+    },
+    {
+      id: 'usdt_trc20',
+      title: { ar: 'USDT TRC20', en: 'USDT TRC20' },
+      details: {
+        ar: `💳 طريقة الدفع: USDT TRC20\n\nاكتب هنا عنوان محفظة TRC20 الخاص بيك.\n\n⚠️ مهم جداً:\nأرسل رمز التحويل ورمز الملاحظة بعد الدفع.`,
+        en: `💳 Payment method: USDT TRC20\n\nPut your TRC20 wallet address here.\n\n⚠️ Important:\nSend transfer code and memo/note after payment.`
+      }
+    },
+    {
+      id: 'custom',
+      title: { ar: 'طريقة دفع أخرى', en: 'Other payment method' },
+      details: {
+        ar: `💳 طريقة دفع أخرى\n\nراسل الدعم حتى يعطيك تفاصيل الدفع المناسبة.\nبعدها ارجع للبوت وارسل رمز التحويل ورمز الملاحظة.`,
+        en: `💳 Other payment method\n\nContact support to receive payment details.\nThen return to the bot and send transfer code and memo/note.`
       }
     }
   ],
 
   texts: {
     ar: {
-      start: 'هلا بيك 👋\nاختر شنو تريد من الأزرار بالأسفل. تگدر تستخدم البوت بدل الدخول للموقع، وتگدر هم تفتح الموقع من زر WebApp.',
       chooseLang: 'اختر اللغة / Choose language',
-      mainMenu: 'القائمة الرئيسية:',
-      products: 'الخدمات والمنتجات:',
+      savedLang: 'تم حفظ اللغة ✅',
+      start: 'هلا بيك 👋\nهذا بوت مساعد الدفع.\nنفس فكرة الموقع: ترسل السيشن، بعدها تختار طريقة الدفع، وبعد الدفع ترسل رمز التحويل ورمز الملاحظة.',
+      mainMenu: 'اختار من الأزرار:',
+      sendSession: 'إرسال السيشن',
       openSite: 'فتح الموقع',
       language: 'اللغة',
       support: 'الدعم',
       myOrders: 'طلباتي',
-      newOrder: 'طلب جديد',
-      back: 'رجوع',
-      orderPrompt: 'اكتب الكمية أو التفاصيل المطلوبة لهذا الطلب:',
-      paymentPrompt: 'اختر طريقة الدفع:',
-      sendReceipt: 'أرسل الآن رمز التحويل + رمز الملاحظة + أي ملاحظات.\nمثال:\nTransfer: 123ABC\nMemo: 7788\nNotes: أريد حساب واحد',
-      orderCreated: 'تم إنشاء طلبك بنجاح ✅\nرقم الطلب:',
-      noOrders: 'ما عندك طلبات بعد.',
       profile: 'حسابي',
-      savedLang: 'تم حفظ اللغة ✅',
+      back: 'رجوع',
+      cancel: 'إلغاء',
+      sessionPrompt: 'ارسل السيشن الآن برسالة واحدة.\n\nمثال: الصق Session / Token / Cookies / البيانات المطلوبة مثل ما يطلبها الموقع.\n\n⚠️ لا ترسل أكثر من رسالة، اجمعها برسالة واحدة.',
+      sessionSaved: 'تم استلام السيشن ✅\nهسه اختار طريقة الدفع:',
+      paymentPrompt: 'اختر طريقة الدفع:',
+      sendPaymentProof: 'بعد ما تدفع، ارسل الآن رمز التحويل + رمز الملاحظة / Memo / Note.\n\nمثال:\nTransfer: 123ABC\nMemo: 7788\nNotes: دفعت وتم التحويل',
+      orderCreated: 'تم إرسال طلبك للإدارة بنجاح ✅\nرقم الطلب:',
+      noOrders: 'ما عندك طلبات بعد.',
+      canceled: 'تم الإلغاء ✅',
+      unknown: 'ما فهمت عليك. استخدم الأزرار أو اكتب /start',
       adminOnly: 'هذا الأمر للإدارة فقط.',
-      canceled: 'تم الإلغاء.',
-      unknown: 'ما فهمت عليك. استخدم الأزرار أو اكتب /start'
+      howItWorks: 'طريقة الاستخدام:\n1) اضغط إرسال السيشن.\n2) الصق السيشن برسالة واحدة.\n3) اختار طريقة الدفع.\n4) بعد الدفع ارسل رمز التحويل ورمز الملاحظة.\n5) الإدارة تراجع الطلب وتقبله.'
     },
     en: {
-      start: 'Welcome 👋\nChoose what you need from the buttons below. You can use the bot instead of entering the website, or open the site with the WebApp button.',
       chooseLang: 'Choose language / اختر اللغة',
-      mainMenu: 'Main menu:',
-      products: 'Services and products:',
+      savedLang: 'Language saved ✅',
+      start: 'Welcome 👋\nThis is the Payment Assistant bot.\nLike the website: send your session, choose a payment method, then send transfer code and memo/note after payment.',
+      mainMenu: 'Choose from the buttons:',
+      sendSession: 'Send session',
       openSite: 'Open site',
       language: 'Language',
       support: 'Support',
       myOrders: 'My orders',
-      newOrder: 'New order',
-      back: 'Back',
-      orderPrompt: 'Write the quantity or required details for this order:',
-      paymentPrompt: 'Choose payment method:',
-      sendReceipt: 'Now send transfer code + memo/note code + any notes.\nExample:\nTransfer: 123ABC\nMemo: 7788\nNotes: I need one account',
-      orderCreated: 'Your order was created successfully ✅\nOrder ID:',
-      noOrders: 'You do not have orders yet.',
       profile: 'My profile',
-      savedLang: 'Language saved ✅',
+      back: 'Back',
+      cancel: 'Cancel',
+      sessionPrompt: 'Send your session now in one message.\n\nExample: paste Session / Token / Cookies / required data exactly like the website asks.\n\n⚠️ Do not send multiple messages. Put everything in one message.',
+      sessionSaved: 'Session received ✅\nNow choose a payment method:',
+      paymentPrompt: 'Choose payment method:',
+      sendPaymentProof: 'After paying, send transfer code + Memo / Note now.\n\nExample:\nTransfer: 123ABC\nMemo: 7788\nNotes: paid successfully',
+      orderCreated: 'Your order was sent to admin successfully ✅\nOrder ID:',
+      noOrders: 'You do not have orders yet.',
+      canceled: 'Canceled ✅',
+      unknown: 'I did not understand. Use the buttons or type /start',
       adminOnly: 'Admins only.',
-      canceled: 'Canceled.',
-      unknown: 'I did not understand. Use the buttons or type /start'
+      howItWorks: 'How it works:\n1) Tap Send session.\n2) Paste your session in one message.\n3) Choose payment method.\n4) After paying, send transfer code and memo/note.\n5) Admin reviews and approves your order.'
     }
   }
 };
@@ -121,17 +104,13 @@ const APP_CONFIG = {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const PORT = Number(process.env.PORT || 3000);
-const ADMIN_IDS = (process.env.ADMIN_IDS || '')
+const ADMIN_IDS = (process.env.ADMIN_IDS || process.env.ADMIN_ID || '')
   .split(',')
   .map((x) => Number(x.trim()))
   .filter(Boolean);
 
-if (!BOT_TOKEN) {
-  throw new Error('BOT_TOKEN is required');
-}
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL is required');
-}
+if (!BOT_TOKEN) throw new Error('BOT_TOKEN is required');
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -162,15 +141,15 @@ async function initDb() {
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS orders (
+    CREATE TABLE IF NOT EXISTS payment_orders (
       id SERIAL PRIMARY KEY,
       telegram_id BIGINT REFERENCES users(telegram_id),
-      product_id TEXT,
-      product_name TEXT,
-      details TEXT,
+      session_text TEXT,
       payment_method TEXT,
-      receipt TEXT,
+      payment_title TEXT,
+      payment_proof TEXT,
       status TEXT DEFAULT 'pending',
+      admin_note TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -179,7 +158,9 @@ async function initDb() {
 
 async function upsertUser(ctx, language) {
   const from = ctx.from;
-  const lang = language || APP_CONFIG.defaultLanguage;
+  if (!from) return;
+  const currentLang = await getUserLanguageSafe(from.id);
+  const lang = language || currentLang || APP_CONFIG.defaultLanguage;
   await pool.query(
     `INSERT INTO users (telegram_id, username, first_name, language, updated_at)
      VALUES ($1, $2, $3, $4, NOW())
@@ -189,22 +170,28 @@ async function upsertUser(ctx, language) {
   );
 }
 
+async function getUserLanguageSafe(telegramId) {
+  try {
+    const result = await pool.query('SELECT language FROM users WHERE telegram_id=$1', [telegramId]);
+    return result.rows[0]?.language;
+  } catch {
+    return null;
+  }
+}
+
+async function getUserLanguage(ctx) {
+  return (await getUserLanguageSafe(ctx.from?.id)) || APP_CONFIG.defaultLanguage;
+}
+
 async function setUserLanguage(telegramId, language) {
   await pool.query('UPDATE users SET language=$1, updated_at=NOW() WHERE telegram_id=$2', [language, telegramId]);
 }
 
-async function getUserLanguage(ctx) {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) return APP_CONFIG.defaultLanguage;
-  const result = await pool.query('SELECT language FROM users WHERE telegram_id=$1', [telegramId]);
-  return result.rows[0]?.language || APP_CONFIG.defaultLanguage;
-}
-
 function mainKeyboard(lang) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback(`🛒 ${t(lang, 'newOrder')}`, 'menu:products')],
+    [Markup.button.callback(`🔐 ${t(lang, 'sendSession')}`, 'flow:start_session')],
     [Markup.button.webApp(`🌐 ${t(lang, 'openSite')}`, APP_CONFIG.siteUrl)],
-    [Markup.button.callback(`📦 ${t(lang, 'myOrders')}`, 'menu:orders'), Markup.button.callback(`👤 ${t(lang, 'profile')}`, 'menu:profile')],
+    [Markup.button.callback(`📦 ${t(lang, 'myOrders')}`, 'menu:orders'), Markup.button.callback('ℹ️ شرح', 'menu:help')],
     [Markup.button.callback(`🌍 ${t(lang, 'language')}`, 'menu:language'), Markup.button.url(`💬 ${t(lang, 'support')}`, APP_CONFIG.supportUrl)]
   ]);
 }
@@ -215,15 +202,15 @@ function languageKeyboard() {
   ]);
 }
 
-function productsKeyboard(lang) {
-  const rows = APP_CONFIG.products.map((p) => [Markup.button.callback(`🛍 ${p.name[lang] || p.name.ar}`, `product:${p.id}`)]);
-  rows.push([Markup.button.callback(`⬅️ ${t(lang, 'back')}`, 'menu:main')]);
-  return Markup.inlineKeyboard(rows);
+function backKeyboard(lang, target = 'menu:main') {
+  return Markup.inlineKeyboard([[Markup.button.callback(`⬅️ ${t(lang, 'back')}`, target)]]);
 }
 
 function paymentKeyboard(lang) {
-  const rows = APP_CONFIG.paymentMethods.map((m) => [Markup.button.callback(`💳 ${m.title[lang] || m.title.ar}`, `pay:${m.id}`)]);
-  rows.push([Markup.button.callback(`⬅️ ${t(lang, 'back')}`, 'menu:products')]);
+  const rows = APP_CONFIG.paymentMethods.map((m) => [
+    Markup.button.callback(`💳 ${m.title[lang] || m.title.ar}`, `pay:${m.id}`)
+  ]);
+  rows.push([Markup.button.callback(`⬅️ ${t(lang, 'back')}`, 'menu:main')]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -247,7 +234,14 @@ bot.command('cancel', async (ctx) => {
 
 bot.action('menu:main', async (ctx) => {
   await ctx.answerCbQuery();
+  ctx.session = {};
   await showMain(ctx, true);
+});
+
+bot.action('menu:help', async (ctx) => {
+  await ctx.answerCbQuery();
+  const lang = await getUserLanguage(ctx);
+  await ctx.editMessageText(t(lang, 'howItWorks'), backKeyboard(lang));
 });
 
 bot.action('menu:language', async (ctx) => {
@@ -265,80 +259,74 @@ bot.action(/^lang:(ar|en)$/, async (ctx) => {
   await showMain(ctx);
 });
 
-bot.action('menu:products', async (ctx) => {
+bot.action('flow:start_session', async (ctx) => {
   await ctx.answerCbQuery();
   const lang = await getUserLanguage(ctx);
-  await ctx.editMessageText(t(lang, 'products'), productsKeyboard(lang));
-});
-
-bot.action(/^product:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const lang = await getUserLanguage(ctx);
-  const product = APP_CONFIG.products.find((p) => p.id === ctx.match[1]);
-  if (!product) return ctx.reply(t(lang, 'unknown'));
-
-  ctx.session.order = { productId: product.id };
-  const text = `🛍 ${product.name[lang] || product.name.ar}\n${product.description[lang] || product.description.ar}\n💵 ${product.priceText[lang] || product.priceText.ar}\n\n${t(lang, 'orderPrompt')}`;
-  await ctx.editMessageText(text, Markup.inlineKeyboard([[Markup.button.callback(`⬅️ ${t(lang, 'back')}`, 'menu:products')]]));
+  ctx.session = { step: 'waiting_session' };
+  await ctx.editMessageText(t(lang, 'sessionPrompt'), Markup.inlineKeyboard([[Markup.button.callback(`❌ ${t(lang, 'cancel')}`, 'menu:main')]]));
 });
 
 bot.action(/^pay:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const lang = await getUserLanguage(ctx);
   const method = APP_CONFIG.paymentMethods.find((m) => m.id === ctx.match[1]);
-  if (!ctx.session.order || !method) return ctx.reply(t(lang, 'unknown'));
+  if (!ctx.session?.sessionText || !method) return ctx.reply(t(lang, 'unknown'), mainKeyboard(lang));
 
-  ctx.session.order.paymentMethod = method.id;
-  ctx.session.step = 'waiting_receipt';
-  await ctx.editMessageText(`💳 ${method.title[lang] || method.title.ar}\n${method.details[lang] || method.details.ar}\n\n${t(lang, 'sendReceipt')}`);
+  ctx.session.paymentMethod = method.id;
+  ctx.session.paymentTitle = method.title[lang] || method.title.ar;
+  ctx.session.step = 'waiting_payment_proof';
+
+  await ctx.editMessageText(
+    `${method.details[lang] || method.details.ar}\n\n${t(lang, 'sendPaymentProof')}`,
+    Markup.inlineKeyboard([[Markup.button.callback(`⬅️ ${t(lang, 'back')}`, 'flow:choose_payment')]])
+  );
+});
+
+bot.action('flow:choose_payment', async (ctx) => {
+  await ctx.answerCbQuery();
+  const lang = await getUserLanguage(ctx);
+  if (!ctx.session?.sessionText) return ctx.editMessageText(t(lang, 'unknown'), mainKeyboard(lang));
+  ctx.session.step = 'choosing_payment';
+  await ctx.editMessageText(t(lang, 'sessionSaved'), paymentKeyboard(lang));
 });
 
 bot.action('menu:orders', async (ctx) => {
   await ctx.answerCbQuery();
   const lang = await getUserLanguage(ctx);
   const result = await pool.query(
-    'SELECT id, product_name, status, created_at FROM orders WHERE telegram_id=$1 ORDER BY id DESC LIMIT 10',
+    'SELECT id, payment_title, status, created_at FROM payment_orders WHERE telegram_id=$1 ORDER BY id DESC LIMIT 10',
     [ctx.from.id]
   );
 
   if (!result.rows.length) {
-    return ctx.editMessageText(t(lang, 'noOrders'), Markup.inlineKeyboard([[Markup.button.callback(`⬅️ ${t(lang, 'back')}`, 'menu:main')]]));
+    return ctx.editMessageText(t(lang, 'noOrders'), backKeyboard(lang));
   }
 
-  const lines = result.rows.map((o) => `#${o.id} — ${o.product_name}\nStatus: ${o.status}\nDate: ${new Date(o.created_at).toLocaleString()}`);
-  await ctx.editMessageText(lines.join('\n\n'), Markup.inlineKeyboard([[Markup.button.callback(`⬅️ ${t(lang, 'back')}`, 'menu:main')]]));
-});
-
-bot.action('menu:profile', async (ctx) => {
-  await ctx.answerCbQuery();
-  const lang = await getUserLanguage(ctx);
-  const result = await pool.query('SELECT COUNT(*)::int AS count FROM orders WHERE telegram_id=$1', [ctx.from.id]);
-  const count = result.rows[0]?.count || 0;
-  await ctx.editMessageText(
-    `👤 ${t(lang, 'profile')}\nID: ${ctx.from.id}\nUsername: @${ctx.from.username || 'none'}\nOrders: ${count}`,
-    Markup.inlineKeyboard([[Markup.button.callback(`⬅️ ${t(lang, 'back')}`, 'menu:main')]])
-  );
+  const lines = result.rows.map((o) => `#${o.id} — ${o.payment_title || '-'}\nStatus: ${o.status}\nDate: ${new Date(o.created_at).toLocaleString()}`);
+  await ctx.editMessageText(lines.join('\n\n'), backKeyboard(lang));
 });
 
 bot.on('text', async (ctx) => {
   await upsertUser(ctx);
   const lang = await getUserLanguage(ctx);
+  const text = ctx.message.text.trim();
 
-  if (ctx.session?.order && !ctx.session.step) {
-    ctx.session.order.details = ctx.message.text;
-    ctx.session.step = 'waiting_payment';
-    return ctx.reply(t(lang, 'paymentPrompt'), paymentKeyboard(lang));
+  if (ctx.session?.step === 'waiting_session') {
+    ctx.session.sessionText = text;
+    ctx.session.step = 'choosing_payment';
+    return ctx.reply(t(lang, 'sessionSaved'), paymentKeyboard(lang));
   }
 
-  if (ctx.session?.order && ctx.session.step === 'waiting_receipt') {
-    const product = APP_CONFIG.products.find((p) => p.id === ctx.session.order.productId);
-    const productName = product?.name[lang] || product?.name.ar || ctx.session.order.productId;
-    const receipt = ctx.message.text;
+  if (ctx.session?.step === 'waiting_payment_proof') {
+    const sessionText = ctx.session.sessionText;
+    const paymentMethod = ctx.session.paymentMethod;
+    const paymentTitle = ctx.session.paymentTitle;
+    const paymentProof = text;
 
     const result = await pool.query(
-      `INSERT INTO orders (telegram_id, product_id, product_name, details, payment_method, receipt, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending') RETURNING id`,
-      [ctx.from.id, ctx.session.order.productId, productName, ctx.session.order.details, ctx.session.order.paymentMethod, receipt]
+      `INSERT INTO payment_orders (telegram_id, session_text, payment_method, payment_title, payment_proof, status)
+       VALUES ($1, $2, $3, $4, $5, 'pending') RETURNING id`,
+      [ctx.from.id, sessionText, paymentMethod, paymentTitle, paymentProof]
     );
 
     const orderId = result.rows[0].id;
@@ -346,11 +334,16 @@ bot.on('text', async (ctx) => {
 
     await ctx.reply(`${t(lang, 'orderCreated')} #${orderId}`, mainKeyboard(lang));
 
+    const adminText =
+      `🆕 طلب دفع جديد #${orderId}\n` +
+      `User: ${ctx.from.first_name || ''} @${ctx.from.username || 'none'} (${ctx.from.id})\n` +
+      `Payment: ${paymentTitle}\n\n` +
+      `🔐 Session:\n${sessionText}\n\n` +
+      `🧾 Transfer/Memo:\n${paymentProof}\n\n` +
+      `قبول: /approve ${orderId}\nرفض: /reject ${orderId}`;
+
     for (const adminId of ADMIN_IDS) {
-      await ctx.telegram.sendMessage(
-        adminId,
-        `🆕 New order #${orderId}\nUser: ${ctx.from.first_name || ''} @${ctx.from.username || 'none'} (${ctx.from.id})\nProduct: ${productName}\nDetails: ${ctx.session?.order?.details || 'saved'}\nPayment: ${receipt}\n\nApprove: /approve ${orderId}\nReject: /reject ${orderId}`
-      ).catch(() => {});
+      await ctx.telegram.sendMessage(adminId, adminText.slice(0, 3900)).catch(() => {});
     }
     return;
   }
@@ -365,9 +358,11 @@ bot.command('admin', async (ctx) => {
 
 bot.command('orders', async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply(t(await getUserLanguage(ctx), 'adminOnly'));
-  const result = await pool.query('SELECT * FROM orders ORDER BY id DESC LIMIT 15');
+  const result = await pool.query('SELECT * FROM payment_orders ORDER BY id DESC LIMIT 15');
   if (!result.rows.length) return ctx.reply('No orders yet.');
-  const text = result.rows.map((o) => `#${o.id} ${o.status}\nUser: ${o.telegram_id}\nProduct: ${o.product_name}\nDetails: ${o.details || '-'}\nPayment: ${o.payment_method || '-'}\nReceipt: ${o.receipt || '-'}`).join('\n\n');
+  const text = result.rows.map((o) =>
+    `#${o.id} ${o.status}\nUser: ${o.telegram_id}\nPayment: ${o.payment_title || '-'}\nSession: ${o.session_text || '-'}\nProof: ${o.payment_proof || '-'}`
+  ).join('\n\n');
   await ctx.reply(text.slice(0, 3900));
 });
 
@@ -379,12 +374,12 @@ async function updateOrderStatus(ctx, status) {
   const id = Number(ctx.message.text.split(/\s+/)[1]);
   if (!id) return ctx.reply('Usage: /approve ORDER_ID or /reject ORDER_ID');
 
-  const result = await pool.query('UPDATE orders SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *', [status, id]);
+  const result = await pool.query('UPDATE payment_orders SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *', [status, id]);
   if (!result.rows.length) return ctx.reply('Order not found.');
 
   const order = result.rows[0];
   await ctx.reply(`Order #${id} updated to ${status}.`);
-  await ctx.telegram.sendMessage(order.telegram_id, `Order #${id} status: ${status}`).catch(() => {});
+  await ctx.telegram.sendMessage(order.telegram_id, `طلبك #${id} صار: ${status}`).catch(() => {});
 }
 
 bot.command('broadcast', async (ctx) => {
@@ -400,27 +395,11 @@ bot.command('broadcast', async (ctx) => {
   await ctx.reply(`Broadcast sent to ${sent} users.`);
 });
 
-// مكان الربط الحقيقي مع API الموقع إذا توفر لاحقاً
-const siteApi = {
-  async getProductsFromSite() {
-    // مثال مستقبلي:
-    // const response = await fetch(`${APP_CONFIG.siteUrl}/api/products`);
-    // return response.json();
-    return APP_CONFIG.products;
-  }
-};
-
 const app = express();
 app.use(express.json());
 
-app.get('/', (_, res) => {
-  res.send('Telegram bot is running ✅');
-});
-
-app.get('/health', (_, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
-});
-
+app.get('/', (_, res) => res.send('Payment Assistant bot is running ✅'));
+app.get('/health', (_, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.use('/telegram', bot.webhookCallback('/telegram'));
 
 await initDb();
