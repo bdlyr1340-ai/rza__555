@@ -1,5 +1,5 @@
 const { Telegraf, Markup } = require('telegraf');
-const { initDB, addUser, getUsersCount, logFridaRun } = require('./database');
+const { initDB, addUser, getUsersCount, logFridaRun, getDbStatus } = require('./database');
 const { getAgents, runFridaScript } = require('./fridaClient');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -15,7 +15,8 @@ function mainKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('📱 عرض الأجهزة', 'show_devices')],
     [Markup.button.callback('🚀 تشغيل Frida', 'run_frida_menu')],
-    [Markup.button.callback('📊 عدد المستخدمين', 'users_count')]
+    [Markup.button.callback('📊 عدد المستخدمين', 'users_count')],
+    [Markup.button.callback('🧪 فحص الإعدادات', 'diagnostics')]
   ]);
 }
 
@@ -36,21 +37,51 @@ function devicesKeyboard(prefix) {
 
 async function showMainMenu(ctx, text = '🔧 لوحة تحكم البوت:') {
   if (ctx.callbackQuery) {
-    await ctx.editMessageText(text, mainKeyboard());
-  } else {
-    await ctx.reply(text, mainKeyboard());
+    return ctx.editMessageText(text, mainKeyboard());
   }
+  return ctx.reply(text, mainKeyboard());
 }
 
 bot.start(async (ctx) => {
-  const user = ctx.from;
-  await addUser(user.id, user.username, user.first_name);
+  try {
+    const user = ctx.from;
+    await addUser(user.id, user.username, user.first_name);
+  } catch (err) {
+    console.error('⚠️ addUser failed, but menu will still open:', err.message);
+  }
   await showMainMenu(ctx);
+});
+
+bot.command('debug', async (ctx) => {
+  const db = getDbStatus();
+  const devices = Object.keys(getAgents());
+  await ctx.reply(
+    `🧪 Debug\n` +
+    `BOT_TOKEN: ✅ موجود\n` +
+    `Database: ${db.ready ? '✅ متصلة' : '❌ غير متصلة'}\n` +
+    `DB Error: ${db.error || 'لا يوجد'}\n` +
+    `FRIDA_AGENTS devices: ${devices.length ? devices.join(', ') : '❌ لا توجد'}\n`,
+    backKeyboard()
+  );
 });
 
 bot.action('main_menu', async (ctx) => {
   await ctx.answerCbQuery();
   await showMainMenu(ctx, '🔧 لوحة التحكم:');
+});
+
+bot.action('diagnostics', async (ctx) => {
+  await ctx.answerCbQuery();
+  const db = getDbStatus();
+  const devices = Object.keys(getAgents());
+  return ctx.editMessageText(
+    `🧪 فحص الإعدادات\n\n` +
+    `BOT_TOKEN: ✅ موجود\n` +
+    `Database: ${db.ready ? '✅ متصلة' : '❌ غير متصلة'}\n` +
+    `DB Error: ${db.error || 'لا يوجد'}\n` +
+    `FRIDA_AGENTS: ${devices.length ? '✅ ' + devices.join(', ') : '❌ فارغ أو JSON خطأ'}`,
+    backKeyboard()
+  );
 });
 
 bot.action('show_devices', async (ctx) => {
@@ -77,8 +108,13 @@ bot.action('run_frida_menu', async (ctx) => {
 
 bot.action('users_count', async (ctx) => {
   await ctx.answerCbQuery();
-  const count = await getUsersCount();
-  return ctx.editMessageText(`👥 المستخدمون: ${count}`, backKeyboard());
+  try {
+    const count = await getUsersCount();
+    return ctx.editMessageText(`👥 المستخدمون: ${count}`, backKeyboard());
+  } catch (err) {
+    console.error('❌ users_count error:', err);
+    return ctx.editMessageText(`❌ قاعدة البيانات غير متصلة.\n\nالسبب: ${err.message}`, backKeyboard());
+  }
 });
 
 bot.action(/^select:(.+)$/, async (ctx) => {
@@ -97,13 +133,19 @@ bot.action(/^run:(.+)$/, async (ctx) => {
   const result = await runFridaScript(device, userId);
   const status = result.startsWith('✅') ? 'success' : 'failed';
 
-  await logFridaRun(userId, device, status, result);
+  try {
+    await logFridaRun(userId, device, status, result);
+  } catch (err) {
+    console.error('⚠️ logFridaRun failed:', err.message);
+  }
+
   return ctx.reply(result, backKeyboard());
 });
 
 bot.catch((err, ctx) => {
-  console.error('Bot error:', err);
-  if (ctx) ctx.reply('❌ صار خطأ بالبوت. راجع Logs في Railway.').catch(() => {});
+  console.error('❌ Bot error full:', err);
+  const msg = `❌ صار خطأ بالبوت:\n${err.message || String(err)}\n\nاكتب /debug حتى تشوف فحص الإعدادات.`;
+  if (ctx) ctx.reply(msg).catch(() => {});
 });
 
 (async () => {

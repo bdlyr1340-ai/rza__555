@@ -1,6 +1,6 @@
 {
-  "name": "telegram-bot-railway-fixed",
-  "version": "1.0.0",
+  "name": "telegram-bot-railway-fixed-v2",
+  "version": "1.0.1",
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
