@@ -1,1 +1,18 @@
-{"name":"telegram-payment-assistant","version":"2.0.0","description":"Telegram payment assistant connected safely to WebApp","main":"index.js","type":"module","scripts":{"start":"node index.js"},"engines":{"node":">=18"},"dependencies":{"express":"^4.18.3","pg":"^8.11.5","telegraf":"^4.16.3"}}
+{
+  "name": "payment-assistant-site-bot",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Telegram bot connected to GPT payment assistant website API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "telegraf": "^4.16.3"
+  }
+}
