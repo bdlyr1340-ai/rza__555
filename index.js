@@ -1,177 +1,174 @@
-const { Telegraf, Markup } = require('telegraf');
-const axios = require('axios');
-const { initDB, addUser, getUsersCount, getDbStatus, logFridaRun } = require('./database');
-const { getAgents, runFridaScript } = require('./fridaClient');
+const { Telegraf } = require('telegraf');
+const { initDB, addUser, getUsersCount, getDbStatus } = require('./database');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
 if (!BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN غير موجود داخل Railway Variables');
-  process.exit(1);
+  throw new Error('BOT_TOKEN غير موجود داخل Railway Variables');
 }
 
 const bot = new Telegraf(BOT_TOKEN);
 
-function mainMenu() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('🛒 GoPlus', 'goplus')],
-    [Markup.button.callback('🧪 Debug', 'debug')],
-    [Markup.button.callback('📱 الأجهزة', 'devices')]
-  ]);
+function hasSensitiveToken(text = '') {
+  const patterns = [
+    /accessToken/i,
+    /sessionToken/i,
+    /Bearer\s+/i,
+    /__Secure-next-auth/i,
+    /authsession/i,
+    /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/,
+    /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/
+  ];
+
+  return patterns.some((regex) => regex.test(text));
 }
 
-function getPaymentConfig() {
-  return {
-    apiUrl: process.env.PAYMENT_API_URL || '',
-    payloadJson: process.env.PAYMENT_PAYLOAD_JSON || '',
-    apiKey: process.env.PAYMENT_API_KEY || ''
-  };
-}
-
-async function registerUser(ctx) {
-  try {
-    const from = ctx.from || {};
-    await addUser(from.id, from.username, from.first_name);
-  } catch (error) {
-    console.warn('⚠️ لم يتم حفظ المستخدم في قاعدة البيانات:', error.message);
-  }
-}
-
-async function sendDebug(ctx) {
-  const db = getDbStatus();
-  let usersCountText = 'غير متاح';
-
-  try {
-    usersCountText = String(await getUsersCount());
-  } catch (_) {}
-
-  const agents = getAgents();
-  const debugText = [
-    '✅ البوت شغال',
-    `BOT_TOKEN: ${BOT_TOKEN ? 'موجود ✅' : 'مفقود ❌'}`,
-    `Database: ${db.ready ? 'متصلة ✅' : 'غير متصلة ❌'}`,
-    db.error ? `DB Error: ${db.error}` : null,
-    `Users Count: ${usersCountText}`,
-    `FRIDA_AGENTS: ${Object.keys(agents).length ? Object.keys(agents).join(', ') : 'فارغ'}`,
-    `PAYMENT_API_URL: ${process.env.PAYMENT_API_URL ? 'موجود ✅' : 'غير موجود'}`
-  ].filter(Boolean).join('\n');
-
-  return ctx.reply(debugText);
-}
-
-async function createPaymentLink(ctx) {
-  const chatId = ctx.chat?.id;
-  const { apiUrl, payloadJson, apiKey } = getPaymentConfig();
-
-  if (!apiUrl || !payloadJson) {
-    return ctx.reply(
-      '⚠️ أمر GoPlus موجود، لكن إعدادات الدفع غير مكتملة.\n' +
-      'أضف PAYMENT_API_URL و PAYMENT_PAYLOAD_JSON داخل Railway Variables.'
-    );
-  }
-
-  let payload;
-  try {
-    payload = JSON.parse(payloadJson);
-  } catch (error) {
-    return ctx.reply('❌ PAYMENT_PAYLOAD_JSON مو JSON صحيح. صحّح المتغير داخل Railway.');
-  }
-
-  await ctx.reply('جاري إنشاء الرابط، انتظر لحظة...');
-
-  try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-
-    const response = await axios.post(apiUrl, payload, { headers, timeout: 30000 });
-    const data = response.data || {};
-
-    const paymentLink =
-      data?.data?.payment_url ||
-      data?.data?.paymentUrl ||
-      data?.payment_url ||
-      data?.paymentUrl ||
-      data?.url ||
-      data?.link;
-
-    if (paymentLink) {
-      return ctx.reply(`تم إنشاء الرابط بنجاح ✅\n\n${paymentLink}`);
+function safeDecode(value) {
+  let current = String(value || '').trim();
+  for (let i = 0; i < 4; i += 1) {
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current) break;
+      current = decoded;
+    } catch (_) {
+      break;
     }
-
-    return ctx.reply(`وصل رد من السيرفر لكن ما لقيت رابط دفع:\n${JSON.stringify(data).slice(0, 900)}`);
-  } catch (error) {
-    const msg = error.response
-      ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data).slice(0, 500)}`
-      : error.message;
-    console.error('Payment API error:', msg);
-    return ctx.reply(`عذراً، فشل الاتصال بنظام الدفع.\n${msg}`);
   }
+  return current;
+}
+
+function parseIncomingData(text) {
+  const trimmed = String(text || '').trim();
+
+  // يقبل JSON مباشر
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    return JSON.parse(trimmed);
+  }
+
+  // يقبل رابط يحتوي data= لكن بشرط يكون بدون توكنات حساسة
+  let dataParam = null;
+  try {
+    const url = new URL(trimmed);
+    dataParam = url.searchParams.get('data');
+  } catch (_) {
+    const match = trimmed.match(/[?&]data=([^&]+)/);
+    dataParam = match ? match[1] : null;
+  }
+
+  if (!dataParam) {
+    throw new Error('NO_JSON');
+  }
+
+  const decoded = safeDecode(dataParam);
+  return JSON.parse(decoded);
+}
+
+function yesNo(value) {
+  if (value === true) return 'نعم';
+  if (value === false) return 'لا';
+  return 'غير معروف';
+}
+
+function formatDate(value) {
+  if (!value) return 'غير معروف';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toISOString().slice(0, 10);
+}
+
+function formatAccount(data) {
+  const user = data.user || {};
+  const account = data.account || {};
+
+  return [
+    '✅ حالة الحساب',
+    '',
+    `👤 الاسم: ${user.name || 'غير معروف'}`,
+    `📧 الإيميل: ${user.email || 'غير معروف'}`,
+    '',
+    `💳 نوع الخطة: ${account.planType || 'غير معروف'}`,
+    `🏷️ نوع الحساب: ${account.structure || 'غير معروف'}`,
+    `⚠️ متأخر بالدفع: ${yesNo(account.isDelinquent)}`,
+    `🌍 المنطقة: ${account.residencyRegion || account.computeResidency || 'غير معروف'}`,
+    `📅 انتهاء البيانات: ${formatDate(data.expires)}`,
+    '',
+    'ℹ️ حتى تحصل رابط الدفع الرسمي، افتح إعدادات الحساب من ChatGPT نفسه.'
+  ].join('\n');
 }
 
 bot.start(async (ctx) => {
-  await registerUser(ctx);
+  const from = ctx.from || {};
+  try {
+    await addUser(from.id, from.username, from.first_name);
+  } catch (_) {
+    // قاعدة البيانات اختيارية، لا نوقف البوت إذا ما متصلة.
+  }
+
   return ctx.reply(
-    'أهلاً بك في CD Store! 🛒\nاختار من الأزرار أو اكتب /debug للفحص.',
-    mainMenu()
+    'أهلاً بيك ✅\n\n' +
+    'أرسل بيانات الحساب بصيغة JSON منظفة أو رابط يحتوي data بدون accessToken وبدون sessionToken.\n\n' +
+    'البوت راح يعرض حالة الحساب فقط بدون أزرار.'
   );
 });
 
-bot.command('debug', sendDebug);
-bot.action('debug', async (ctx) => {
-  await ctx.answerCbQuery();
-  return sendDebug(ctx);
+bot.command('debug', async (ctx) => {
+  const db = getDbStatus();
+  let count = 'غير متاح';
+  try {
+    count = String(await getUsersCount());
+  } catch (_) {}
+
+  return ctx.reply(
+    '✅ البوت شغال\n' +
+    '✅ BOT_TOKEN موجود\n' +
+    `🗄️ قاعدة البيانات: ${db.ready ? 'متصلة' : 'غير متصلة'}\n` +
+    `👥 عدد المستخدمين: ${count}\n` +
+    `${db.error ? `⚠️ DB Error: ${db.error}` : ''}`
+  );
 });
 
-bot.command('goplus', createPaymentLink);
-bot.action('goplus', async (ctx) => {
-  await ctx.answerCbQuery();
-  return createPaymentLink(ctx);
-});
+bot.on('text', async (ctx) => {
+  const text = ctx.message.text || '';
 
-bot.command('devices', async (ctx) => {
-  const agents = getAgents();
-  const names = Object.keys(agents);
-  if (!names.length) return ctx.reply('ماكو أجهزة مسجلة. أضف FRIDA_AGENTS داخل Railway.');
-  return ctx.reply(`الأجهزة المسجلة:\n${names.map((name) => `• ${name}`).join('\n')}\n\nللتشغيل اكتب:\n/run_frida device_id`);
-});
-
-bot.action('devices', async (ctx) => {
-  await ctx.answerCbQuery();
-  const agents = getAgents();
-  const names = Object.keys(agents);
-  if (!names.length) return ctx.reply('ماكو أجهزة مسجلة. أضف FRIDA_AGENTS داخل Railway.');
-  return ctx.reply(`الأجهزة المسجلة:\n${names.map((name) => `• ${name}`).join('\n')}\n\nللتشغيل اكتب:\n/run_frida device_id`);
-});
-
-bot.command('run_frida', async (ctx) => {
-  const parts = (ctx.message?.text || '').trim().split(/\s+/);
-  const deviceId = parts[1];
-
-  if (!deviceId) {
-    return ctx.reply('اكتب الجهاز بعد الأمر، مثال:\n/run_frida phone1');
+  if (hasSensitiveToken(text)) {
+    return ctx.reply(
+      '🚫 لا ترسل سيشن أو توكن داخل البوت.\n\n' +
+      'accessToken و sessionToken مثل الباسورد، وأي رابط يحتويهن ممكن يفتح الحساب.\n' +
+      'أرسل فقط JSON منظف بدون التوكنات حتى أعرض حالة الحساب.'
+    );
   }
-
-  await ctx.reply(`جاري التنفيذ على ${deviceId}...`);
-  const result = await runFridaScript(deviceId, ctx.from.id);
 
   try {
-    await logFridaRun(ctx.from.id, deviceId, result.startsWith('✅') ? 'success' : 'failed', result);
+    const data = parseIncomingData(text);
+
+    if (hasSensitiveToken(JSON.stringify(data))) {
+      return ctx.reply(
+        '🚫 البيانات تحتوي توكن/سيشن حساس. احذف accessToken و sessionToken وأرسل المعلومات العامة فقط.'
+      );
+    }
+
+    if (!data.user && !data.account) {
+      return ctx.reply('⚠️ البيانات وصلت، لكن ما بيها user أو account حتى أعرض الحالة.');
+    }
+
+    return ctx.reply(formatAccount(data));
   } catch (error) {
-    console.warn('⚠️ لم يتم حفظ سجل Frida:', error.message);
+    return ctx.reply(
+      'أرسل بيانات الحساب بصيغة JSON منظفة، مثل:\n\n' +
+      '{\n' +
+      '  "user": { "name": "Test", "email": "test@gmail.com" },\n' +
+      '  "expires": "2026-07-24T14:50:34.105Z",\n' +
+      '  "account": { "planType": "free", "structure": "personal", "isDelinquent": false }\n' +
+      '}'
+    );
   }
-
-  return ctx.reply(result);
 });
 
-bot.catch((err, ctx) => {
-  console.error(`❌ Bot error for update ${ctx.update?.update_id}:`, err);
-});
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
 (async () => {
   await initDB();
   await bot.launch();
-  console.log('✅ Telegram bot is running.');
+  console.log('Bot is running ✅');
 })();
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
