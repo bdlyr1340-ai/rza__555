@@ -3,6 +3,8 @@ const axios = require('axios');
 const { initDB } = require('./database');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+// 🟢 هنا الخطأ اللي أنا سويته: كنت ماسح سطر سحب الـ API Key من المتغيرات
+const PAYMENT_API_KEY = process.env.PAYMENT_API_KEY; 
 
 if (!BOT_TOKEN) {
   console.error('❌ يرجى إضافة BOT_TOKEN في متغيرات Railway!');
@@ -22,7 +24,7 @@ bot.on('text', (ctx) => {
   if (text.startsWith('/')) return;
 
   if (text.length < 20) {
-      return ctx.reply("❌ السيشن خطأ! يبدو غير صالح أو لم تقم بنسخه بالكامل. يرجى التأكد وإعادة الإرسال.");
+      return ctx.reply("❌ السيشن خطأ! يرجى التأكد وإعادة الإرسال.");
   }
 
   userSessions.set(ctx.from.id, text);
@@ -37,7 +39,7 @@ bot.on('text', (ctx) => {
 });
 
 bot.action(/plan_(.+)/, async (ctx) => {
-  let planSelected = ctx.match[1]; // plus, go, pro
+  let planSelected = ctx.match[1];
   const userId = ctx.from.id;
   const sessionData = userSessions.get(userId);
 
@@ -46,7 +48,6 @@ bot.action(/plan_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const waitMsg = await ctx.reply(`⏳ جاري طلب رابط **${planSelected.toUpperCase()}**...`);
 
-  // تصحيح اسم الباقة ليطابق السيرفر (حسب كودك القديم كان اسمها goplus)
   let apiPlanType = planSelected;
   if (planSelected === 'go') apiPlanType = 'goplus';
 
@@ -58,7 +59,6 @@ bot.action(/plan_(.+)/, async (ctx) => {
       "token": {
         "accessToken": sessionData,
         "sessionToken": sessionData,
-        // إضافة بيانات المستخدم لأن بعض السيرفرات لا تولد الرابط بدونها
         "user": {
           "id": `user-${userId}`,
           "name": ctx.from.first_name || "User",
@@ -72,12 +72,16 @@ bot.action(/plan_(.+)/, async (ctx) => {
       }
     };
 
-    // إضافة Headers الأصلية لمنع السيرفر من رفض الطلب
     const headers = {
       "Content-Type": "application/json",
       "Origin": "https://gpt.aide.freespaces.app",
       "Referer": "https://gpt.aide.freespaces.app/"
     };
+
+    // 🟢 وهنا رجعت الـ API Key للهيدر حتى السيرفر يقبله وينطي الرابط
+    if (PAYMENT_API_KEY) {
+        headers["Authorization"] = `Bearer ${PAYMENT_API_KEY}`;
+    }
 
     const api_url = "https://gpt.serve.freespaces.app/api/payment/link";
     const response = await axios.post(api_url, payload, { 
@@ -87,7 +91,6 @@ bot.action(/plan_(.+)/, async (ctx) => {
 
     const data = response.data;
     
-    // استخراج الرابط
     const payment_link = 
       data?.data?.payment_url || 
       data?.data?.paymentUrl || 
@@ -95,7 +98,6 @@ bot.action(/plan_(.+)/, async (ctx) => {
       data?.url || 
       data?.link;
 
-    // التأكد من أن الرابط ليس فارغاً (أطول من 5 أحرف مثلاً)
     if (payment_link && payment_link.length > 5) {
       const success_msg = `تم إنشاء الرابط بنجاح! 🎉\n\n📦 الباقة: **${planSelected.toUpperCase()}**\n🔗 الرابط:\n${payment_link}\n\nللدعم: +9647728257333`;
       return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, success_msg);
@@ -105,7 +107,7 @@ bot.action(/plan_(.+)/, async (ctx) => {
         ctx.chat.id, 
         waitMsg.message_id, 
         undefined, 
-        `❌ السيرفر رد بنجاح لكنه لم يرسل الرابط!\n\nتفاصيل الرد:\n\`\`\`json\n${errorDetail}\n\`\`\``,
+        `❌ السيرفر رد بنجاح لكنه لم يرسل الرابط!\n\n⚠️ تأكد أنك أضفت PAYMENT_API_KEY في Railway.\n\nتفاصيل الرد:\n\`\`\`json\n${errorDetail}\n\`\`\``,
         { parse_mode: 'Markdown' }
       );
     }
