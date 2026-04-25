@@ -20,13 +20,25 @@ bot.start((ctx) => {
   );
 });
 
-// دالة مشتركة لمعالجة السيشن (سواء اجى من ملف أو من نص)
-async function processSessionData(ctx, sessionText) {
+// دالة ذكية لمعالجة السيشن بدون أخطاء
+async function processSessionData(ctx, sessionData) {
   let tokenObj;
-  try {
-    tokenObj = JSON.parse(sessionText);
-  } catch (e) {
-    return ctx.reply("❌ محتوى السيشن غير صحيح. تأكد أنك نسخت الـ JSON بالكامل من الموقع.");
+
+  // 1. إذا كان axios حوله تلقائياً لـ Object
+  if (typeof sessionData === 'object') {
+    tokenObj = sessionData;
+  } else {
+    try {
+      // 2. تنظيف النص من أي رموز مخفية أو مسافات قبل تحليله
+      let cleanedText = String(sessionData).trim();
+      cleanedText = cleanedText.replace(/^\uFEFF/, ''); // إزالة الرمز المخفي (BOM)
+      cleanedText = cleanedText.replace(/[\u201C\u201D]/g, '"'); // تصليح الأقواس الذكية
+      
+      tokenObj = JSON.parse(cleanedText);
+    } catch (e) {
+      // 3. طباعة الخطأ الحقيقي حتى نعرف ليش جاي يرفضه
+      return ctx.reply(`❌ المشكلة بالملف أو النص!\n\nسبب الرفض: ${e.message}\n\nتأكد أن الملف النصي يبدأ بحرف { وينتهي بحرف } وماكو أي كلام ثاني وياه.`);
+    }
   }
 
   userSessions.set(ctx.from.id, tokenObj);
@@ -40,32 +52,28 @@ async function processSessionData(ctx, sessionText) {
   );
 }
 
-// 1. استقبال السيشن إذا المستخدم دزه كرسالة نصية
 bot.on('text', async (ctx) => {
   const text = ctx.message.text.trim();
   if (text.startsWith('/')) return;
   await processSessionData(ctx, text);
 });
 
-// 2. 🟢 السحر الجديد: استقبال السيشن إذا المستخدم دزه كملف (.txt)
 bot.on('document', async (ctx) => {
   const file = ctx.message.document;
   
-  // التأكد إن الملف هو ملف نصي txt
   if (file.mime_type !== 'text/plain' && !file.file_name.endsWith('.txt')) {
     return ctx.reply("❌ يرجى إرسال السيشن في ملف بصيغة (.txt) فقط.");
   }
 
   try {
-    // تحميل الملف من سيرفرات تيليجرام
     const fileLink = await ctx.telegram.getFileLink(file.file_id);
     const response = await axios.get(fileLink.href);
-    const sessionText = response.data;
     
-    await processSessionData(ctx, sessionText);
+    // إرسال محتوى الملف مباشرة للمعالجة
+    await processSessionData(ctx, response.data);
   } catch (error) {
     console.error("خطأ في قراءة الملف:", error);
-    return ctx.reply("❌ حدث خطأ أثناء قراءة الملف. يرجى المحاولة مرة أخرى.");
+    return ctx.reply("❌ حدث خطأ أثناء تحميل الملف من تيليجرام.");
   }
 });
 
