@@ -13,19 +13,20 @@ const bot = new Telegraf(BOT_TOKEN);
 const userSessions = new Map();
 
 bot.start((ctx) => {
-  return ctx.reply("أهلاً بك! 🛒\n\nيرجى نسخ **كود السيشن الكامل (JSON)** من الموقع وإرساله هنا.");
+  return ctx.reply(
+    "أهلاً بك! 🛒\n\n" +
+    "لضمان عدم حدوث أي خطأ، يرجى **حفظ السيشن في ملف بصيغة (.txt) وإرساله هنا كملف**، " +
+    "أو إرساله كرسالة نصية إذا كان حجمه يسمح."
+  );
 });
 
-bot.on('text', (ctx) => {
-  const text = ctx.message.text.trim();
-  if (text.startsWith('/')) return;
-
+// دالة مشتركة لمعالجة السيشن (سواء اجى من ملف أو من نص)
+async function processSessionData(ctx, sessionText) {
   let tokenObj;
   try {
-    // هنا البوت راح يستقبل الملف الكامل اللي نسخته من الموقع بدون ما يغير حرف
-    tokenObj = JSON.parse(text);
+    tokenObj = JSON.parse(sessionText);
   } catch (e) {
-    return ctx.reply("❌ السيشن اللي دزيته مو بصيغة صحيحة. لازم تنسخ الكود الكامل اللي يبدأ بقوس { وبيه بيانات الحساب.");
+    return ctx.reply("❌ محتوى السيشن غير صحيح. تأكد أنك نسخت الـ JSON بالكامل من الموقع.");
   }
 
   userSessions.set(ctx.from.id, tokenObj);
@@ -37,6 +38,35 @@ bot.on('text', (ctx) => {
       [Markup.button.callback('خدمة Go 🚀', 'plan_goplus')]
     ])
   );
+}
+
+// 1. استقبال السيشن إذا المستخدم دزه كرسالة نصية
+bot.on('text', async (ctx) => {
+  const text = ctx.message.text.trim();
+  if (text.startsWith('/')) return;
+  await processSessionData(ctx, text);
+});
+
+// 2. 🟢 السحر الجديد: استقبال السيشن إذا المستخدم دزه كملف (.txt)
+bot.on('document', async (ctx) => {
+  const file = ctx.message.document;
+  
+  // التأكد إن الملف هو ملف نصي txt
+  if (file.mime_type !== 'text/plain' && !file.file_name.endsWith('.txt')) {
+    return ctx.reply("❌ يرجى إرسال السيشن في ملف بصيغة (.txt) فقط.");
+  }
+
+  try {
+    // تحميل الملف من سيرفرات تيليجرام
+    const fileLink = await ctx.telegram.getFileLink(file.file_id);
+    const response = await axios.get(fileLink.href);
+    const sessionText = response.data;
+    
+    await processSessionData(ctx, sessionText);
+  } catch (error) {
+    console.error("خطأ في قراءة الملف:", error);
+    return ctx.reply("❌ حدث خطأ أثناء قراءة الملف. يرجى المحاولة مرة أخرى.");
+  }
 });
 
 bot.action(/plan_(.+)/, async (ctx) => {
@@ -51,7 +81,6 @@ bot.action(/plan_(.+)/, async (ctx) => {
   const waitMsg = await ctx.reply(`⏳ جاري طلب رابط خدمة **${planName}** من الموقع...`);
 
   try {
-    // نركب الطلب ونخلي السيشن مالتك مثل ما هو بالضبط
     const payload = {
       "country": "US",
       "planType": planSelected,
@@ -65,7 +94,6 @@ bot.action(/plan_(.+)/, async (ctx) => {
       "Referer": "https://gpt.aide.freespaces.app/"
     };
 
-    // إذا عندك API KEY خليه بمتغيرات Railway، إذا ما عندك البوت راح يشتغل بدونه
     if (process.env.PAYMENT_API_KEY) {
         headers["Authorization"] = `Bearer ${process.env.PAYMENT_API_KEY}`;
     }
