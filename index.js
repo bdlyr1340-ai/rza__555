@@ -1,158 +1,75 @@
-const { Telegraf, Markup } = require('telegraf');
-const { initDB, addUser, getUsersCount, logFridaRun, getDbStatus } = require('./database');
-const { getAgents, runFridaScript } = require('./fridaClient');
+import telebot
+import requests
+import os
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
+# سحب توكن البوت من متغيرات البيئة في Railway
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-if (!BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN غير موجود في Variables داخل Railway');
-  process.exit(1);
-}
+# التأكد من أن التوكن موجود حتى لا يتوقف الكود فجأة
+if not BOT_TOKEN:
+    raise ValueError("يرجى إضافة BOT_TOKEN في متغيرات Railway!")
 
-const bot = new Telegraf(BOT_TOKEN);
+bot = telebot.TeleBot(BOT_TOKEN)
 
-function mainKeyboard() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('📱 عرض الأجهزة', 'show_devices')],
-    [Markup.button.callback('🚀 تشغيل Frida', 'run_frida_menu')],
-    [Markup.button.callback('📊 عدد المستخدمين', 'users_count')],
-    [Markup.button.callback('🧪 فحص الإعدادات', 'diagnostics')]
-  ]);
-}
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    welcome_text = "أهلاً بك في CD Store! 🛒\nلإصدار رابط دفع لاشتراك GoPlus، أرسل الأمر:\n/goplus"
+    bot.reply_to(message, welcome_text)
 
-function backKeyboard() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('🔙 رجوع', 'main_menu')]
-  ]);
-}
+@bot.message_handler(commands=['goplus'])
+def create_payment_link(message):
+    chat_id = message.chat.id
+    bot.send_message(chat_id, "جاري إنشاء رابط الدفع المخصص لك، يرجى الانتظار...")
 
-function devicesKeyboard(prefix) {
-  const devices = Object.keys(getAgents());
-  const rows = devices.map((device) => [
-    Markup.button.callback(`📱 ${device}`, `${prefix}:${device}`)
-  ]);
-  rows.push([Markup.button.callback('🔙 رجوع', 'main_menu')]);
-  return Markup.inlineKeyboard(rows);
-}
+    try:
+        payload = {
+            "country": "US",
+            "planType": "goplus",
+            "isShortLink": 0,
+            "token": {
+                "WARNING_BANNER": "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. SHARING THIS INFORMATION IS LIKE SHARING YOUR PASSWORD. !!!!!!!!!!!!!!!!!!!!",
+                "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfWDh6WTZ2VzJwUTl0UjNkRTduSzFqTDVnSCIsImV4cCI6MTc3Nzg1ODEyNiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImM3YTQzNTA0LWY2MWMtNGQwYi05YzZiLWU4NWFmZTAyZWM0YiIsImNoYXRncHRfYWNjb3VudF91c2VyX2lkIjoidXNlci1qaDl6dGt3bWkxODFhVHlNWlBqOEZwRnhfX2M3YTQzNTA0LWY2MWMtNGQwYi05YzZiLWU4NWFmZTAyZWM0YiIsImNoYXRncHRfY29tcHV0ZV9yZXNpZGVuY3kiOiJub19jb25zdHJhaW50IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJmcmVlIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlci1qaDl6dGt3bWkxODFhVHlNWlBqOEZwRngiLCJ1c2VyX2lkIjoidXNlci1qaDl6dGt3bWkxODFhVHlNWlBqOEZwRngifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9wcm9maWxlIjp7ImVtYWlsIjoiaG5zaGFsc2hheWI2OUBnbWFpbC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZX0sImlhdCI6MTc3Njk5NDEyNSwiaXNzIjoiaHR0cHM6Ly9hdXRoLm9wZW5haS5jb20iLCJqdGkiOiJjOTRkNjYzMi0yNTE1LTQ3NDAtYTRkOC0xNWNhMzBhMjc1ZjEiLCJuYmYiOjE3NzY5OTQxMjUsInB3ZF9hdXRoX3RpbWUiOjE3NzY5OTQxMjQyMzksInNjcCI6WyJvcGVuaWQiLCJlbWFpbCIsInByb2ZpbGUiLCJvZmZsaW5lX2FjY2VzcyIsIm1vZGVsLnJlcXVlc3QiLCJtb2RlbC5yZWFkIiwib3JnYW5pemF0aW9uLnJlYWQiLCJvcmdhbml6YXRpb24ud3JpdGUiXSwic2Vzc2lvbl9pZCI6ImF1dGhzZXNzXzdheTRKMGFTMkY0YUF0UTM3djNaNHVlaCIsInNsIjp0cnVlLCJzdWIiOiJnb29nbGUtb2F1dGgyfDEwMjA3MDE0Mjk4OTE3OTUzMjc4MCJ9.okZDD4hd8zr4dRp9JE7GVCUWfEhlWJ0NFu3yTZ1BWg1trBkukLCfxgab5s1carDGmoDxE99eFb_b7bqxkb6kNpa9gjKKSDL-kT3FcK9KRhtG22WgR39JZLmp4DzvukRwRXvVoBdJaXQv9RG5cK0Myq4mSCLScTXgTjjPg89juLLZpicc7Q2fGEP-nw5yTXPAHhtSaWS1sa_izQyxS61YPTVKLqYUy_3-4p41R9wJUcDJsFj7qMKF5w2IHeB-e-VyWBVYMJfThppSrxhayYF5gkAdUT7nWh4-WHkjz7dDQCckF8extxAlYdqZ8Z3PlKcpZKVPGKphg3xLtBWfl5vl4llJ3hentmCHni7vQZMiJqHTg0SCEJHcPCnUgsNaRPJrnvPGlioaKG6a2php5vt13hHX8yx1LzNZf-wlX0887TnVwULExXpZ6pQEWSDxFOyRmuYsCsTViwYniduTlFyP76ABcbptd1h-PVl0vLm5n9DaEl_dQRhVxwBXaaiudTugDKBuRpKYZEIHt9sXphpknRY3J9Pdauwd32UOt-MdDiUEDAoNb1E-pwwf0KrkKqeQ5ZZUfjYPGXUvw5ngkW0ICackxnpEpxPkCRCjumF-QZIknB4Pprb88kLF74U4753JLu0JCyg8v6q0Q7g8YwIKKhGanWLE7Xl2OpPQ18nmCjQ",
+                "account": {
+                    "id": "c7a43504-f61c-4d0b-9c6b-e85afe02ec4b",
+                    "planType": "free",
+                    "structure": "personal"
+                },
+                "authProvider": "openai",
+                "expires": "2026-07-24T14:50:34.105Z",
+                "rumViewTags": {"light_account": {"fetched": False}},
+                "sessionToken": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..YDq32xx7HgD3IHJf.iVAqM3411hagOzAXUyx-nLo4NVE_rg5NUS4Z_794BxrUdIc94qtrpU1ud5mmMUem1amWZcV5c1AfA5AFpY8DRXc6BpV_7gkf51SVBQGwm32OHYGVow-65iopOGNiGVQqehIo5-_WFTiIFM8c_73BLhIXsMvyaMBD_GkcCZncHstUE2AiUNbPYz1ajWPvfDQuHxkVKoyPC1W2I1R8lcPakYLOSThFQfBpmS2NUZfMkep1AzGw3Lp1hUuq5v8iK6FnP6XgUEoLxBKybNdYbzNx24GkP_OC1SS4s50Sgt2tjUtednovLzgKPhj-GisCkFbiUhBUcPJKtbPaY0cGBr0It-YC5oDEthEDwsjKtm1D1W4194uC4h64B1yCEWf_9OGD6-_xj3zhUZEVULTqblaf3bEiCdqkwAUmikEZTRNVCnTEe-6_KjzyP2ubj5WYa6cBGqaosTxdJco5cayUySVNBOjBPd9R0bN6MaTSBq_YxSxLD-EcHnuWNC8_Q8Y0MTinWgrSU5pjKDXJW4mjMXTn23VtH-CsUOI8DEb8sC6to68M22QjtloVjZO5wjHRmM0Bu7kBQP2NbCKuaz-UwIZ4g6Ub7QSpiXSY_h2_VUOH-YgsYY34eNyi5FEiiJAxiS9fFdtZyIyXepks27tJNbhq1RFo4yecvHmrp__7IaMKzch0TqxbqZ2CmtTH42APh0Ll4Qxa_VN6np4G49Yed5EPXaGiF0Ys4QXgsPZsf9C8cEwEnV5qtGg3KEiQMvolhFREofJZFPLdyXn0bI3p9TVzUlh4y9D22vYpXt3cI42ailG4xFuDnEWgg6goJph_DfbI_NcqGKvXkitMFw4pVTq8k4WhynINeivuPAW-6qAvS7NB7akgDjrj-v0HfyBtst5Oev8DXdNa2Pn6LGe4Qm0sM-gIIoUEsqfTBze8x8Dkdu6x0zHXof1M4P8z-R9WJ7SeGnW7MrgIB-WS8dJTpfz9yHUZ946JzLOHYhYlQ7PrcwfPmFoQYGoD1ouvXF2vWl7gYjLWdPLTp8bh-INip02Kv1WXMLbQdTLb4fmiOGEWotTxAqx1J5OE2ARy9PezHNuCu0e_Jaxk19LmCZVVZZJXRDWHThGwxr_4zPe9ENFAaCpSCq538eziF4pntr0pnEZxVAV3_ld-O7KambbyS5ris4h1RE3Q8XK2hqjYcy9pYupJVGlBjewVR_w8Tw7hoZDCq1CITcW5tuimrU1lfB-QVHPNnVC4X5HMEmM9RETIm81NCG_JTOKO3Txj0_cwFDnZoFvRigKRK1qzZKHDkwc1RPvrVInkdGROsJl65-Ca6oiRcnQauyrAeq3MUU7C3HeZn7K1fiVI81YYtLTy0VGI2bAca0c2lTbvr58Vs_i1Zmwjrs4aEEIqSOMtUKxIKvWSfMG6Tn-8pksB4FZtg5RkGzY6tKGi0w53nCMu66ZxqB-W1rwm03vXmnjIHRDQs7cmCkWdXXmTY1HJwk88LTAtav9yghfUIrJeeyjFizmX9J8ynvbXl1-9fyTpa3c6hZUIwXCUXB71doRs9zQzx1DHFH_GxXAzUvwg1l_Ez6SvFBeXV1NMHkfR0FTQrOuhoW-AjYv4hagiAloVq0skSFtPwS-uvgvuNjKiaqxxCd0z8gPRA2_Wm3Zv46KXGmjIaq-MlNV303OrNaaBdJGoT3hRG0PX3R1SafheCU2auPTD0kBHcHeTmCwGNByl8r2uJOXvkOwT4l7AoZW6h6vU7lIDlTmO5SpYHQQidqR3ID3JkcNxRVWASYyhwjfgNHBXld4Wxge7AvB6YVJfmg_LdU2m9uFshKlvvHhKSLJH8lSozcL8DITdqh5LL0ZNMHD9-RVRWcncrHZYCSa4bhXZFvpEfI7UKYaMJc_wPYzmoFzmamnktClD5cK7WasxZyn8vFs6d_9mXwva_f-LHbDvsNQO2bSwsMh5ZzQ5wcXV1LY5psifXl6Bccgx8xTUQpJP34cHIWOH4-hbF1yXLTsIZVTWRDgLPFyns1s3uPG9wSa4CvC3CrqwO_spmpY9KSPj4MF2CJ4U-Zk9GQTAXJ0Vr1r07VupS7gS0RabuyJltrk_sAJ_PziogId4I9UEc3lftYRyHi6D4GYRPXWN-C6pXj4bvLovmoUcktEPC454XsqBVinVnmuwml0oIwvvH-04fENvbRW_h4A5_5KHJpTUbzbmK1MXqZXcoVuxdDW8s4tOrUXvlxRfjt8q_kId7AOAanh0_bvI2ly1L8hs2DQQxiQBI5ZvdL-E9RHL5kTfpulK9NJJi-B-bmqjScvdEajSv88A4uWr8tAXx8uvvYs5gK-gQmNJ2gJ-85T03fH9RBjkvrXVemSgKIszLV64gLIEJMha16LBFnUV_ywEPHsTVrUDrBhVWWUqc1VntyXC0r_IYunaE5X5MW2T1FNtFrSTX7lpF330Rzqd7iJrmc4OSlOmRbNEm7c9ixbtztt0DKJgnssi6PXeW7wUeSZ0LQKfbKVUQmqmEyCr3stkzfXSb0bqrsjINE2V0KG5IZOHOYvs_sWQ309FEV9cf7qkAD7O9VlXkImZjWEPMB6zXE65DG7vatbtxNeV3Ys9aJNl39APS-0SkFJHZpvH7fgAL1lHnTyZVUc8Z4fbkfvnzilfrJO59-BxhMHJWx0zBPCJ4l2t0J0Pu4eKIsErRg-ck92piEpOmGpX_Yj4QrkCuWLDVbUiUTSQfZ9w-RZgsCffevqutlHcnaodGiBM_jGlScnF6r7-bjme7dQHZMjOIN4GTxYxd9p7ybHL8y6seTO202UxUszaYdzJkPNmp_D-IBh3-temwOD8W_ZoHmCLhja8v8UENXxE9P7ld5YROWdrr7IDAHt-3ByXYNhhYYVztw6bzQaClbU27AbZngk7z1KUNe3Bndza9VkLTffjvz7O2zmgcT3dTeGqdcaS7K_ln8aKfMxO4G5SFhfLqTu9QNiO582iPl0S1UjvGHN7CzABTWVd7vQbQTkNf8api5moSRieLTWFhAaFpzZxkh1ZgqZ5mXOZ0EHaDHG0lv-m1j5iwwAq7DmN_EWHTlMmNbT-8VdC4RsLYRuXllXz9lKjdaZ943YrOwlrRneXGLbeRPIZTniX5TU6CgAlFdFqcNts_uujfcjmtD1ei1SOF5KtJR7yERbEtYyG2dECq01Adggv7afxHSqGJlnmjAggZkJKDsa6yesU1oqtPfn5GM2xWjox9eRHWxQck3SLt9lLksZpqnZNkCYfOh0v6v0cFEYDYj8rO9VPabFnhs7jLG3SNplfwGIBTqqCLmwc-PuFYF0WP-3kivSYgWG81-Qzh5izrIvxzdfK290dFs334fglT4nnKTrGq3kRBAo7LWWEMDMgScLikDAbVZWAXdUY2Qc5x7JVlNzfEzxLjC1AAfybQ6QblRCuvSWflsdT4BOBKCuLDk_A7Qv7py4iS8bpc6FEhAllO3iaMipLewbTDRuXvsFIy0qo4HJvXOzhc2SGZYcL128Wx6SrMMWlpqm6hEYF4Qk6PFGqMLadwhdFyh4oZvpHeEBmkkfBohYjtFCKM4A1iJdKEvuMmNY1gfEUgG9mtt2UTXVzAw11iIeFreBnjTlgU6U2JOaZO1CPmqJbgDywQZJiIpsY_dv0WCirOgMjTdiob_OTKLB36NRqC5iQBkOWwtvAryPbhoS4WaS-tAEMrf6tNlumQQUe_PERocPUJuAloS9nowiWrG8fdL7BdYNk1FIkyvS6wmTelW8taDaHznX0YKi5wtrSY_0qd9nBg7IFjTCAkbgjlIY2lpPhY05uECP1rBySqWnESIHltp23FUjS_Z2YUMDI1HTmzxL5YL6Go2BRKMz14yrDJsRHSJ52dPxaIH8r1ZZXvp_PdcVU5GrKM59GKneA_ErTVC30WgkLVRi1w_S6txwv-CiPfCG7mDQLmizIFjZc24ra_7ZQH-MJPNn0CuUHowYjzfI0WPTHS-fv1_P6kyxVyefLiUYobavX4LG-L5VfstYgyV725ekC146gUDoRMqvUhwGtb3Rmc1bIh2NakW18U0RLV6U7ca3IQqbCTGCVx9JBnm2FZ-JiGDkj0QkWHxcbdZ9t9vrMeL3EePdmy_NlafT_6QUSd6Ne-FadbJYSAVvfv-RJ9xrcW7Vq5B0annJgrWtf6zeZyWD5Zv9F_iPFrJ3DwlwR_yZrJOpUsw.P8hDV75OjMA8PZMgLGlrrA",
+                "user": {
+                    "id": "user-jh9ztkwmi181aTyMZPj8FpFx",
+                    "name": "YouTube Premium",
+                    "email": "hnshalshayb69@gmail.com"
+                }
+            }
+        }
 
-async function showMainMenu(ctx, text = '🔧 لوحة تحكم البوت:') {
-  if (ctx.callbackQuery) {
-    return ctx.editMessageText(text, mainKeyboard());
-  }
-  return ctx.reply(text, mainKeyboard());
-}
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://gpt.aide.freespaces.app",
+            "Referer": "https://gpt.aide.freespaces.app/"
+        }
 
-bot.start(async (ctx) => {
-  try {
-    const user = ctx.from;
-    await addUser(user.id, user.username, user.first_name);
-  } catch (err) {
-    console.error('⚠️ addUser failed, but menu will still open:', err.message);
-  }
-  await showMainMenu(ctx);
-});
+        api_url = "https://gpt.serve.freespaces.app/api/payment/link"
+        response = requests.post(api_url, json=payload, headers=headers)
+        response.raise_for_status()
+        
+        payment_data = response.json()
+        
+        if payment_data.get("code") == 200 and payment_data.get("data"):
+            payment_link = payment_data["data"]["payment_url"]
+            success_msg = (
+                f"تم إنشاء رابط الدفع بنجاح! 🎉\n\n"
+                f"اضغط هنا للدفع:\n{payment_link}\n\n"
+                f"للدعم الفني: +9647728257333"
+            )
+            bot.send_message(chat_id, success_msg)
+        else:
+            bot.send_message(chat_id, f"فشل إنشاء الرابط. السيرفر يقول: {payment_data.get('message')}")
 
-bot.command('debug', async (ctx) => {
-  const db = getDbStatus();
-  const devices = Object.keys(getAgents());
-  await ctx.reply(
-    `🧪 Debug\n` +
-    `BOT_TOKEN: ✅ موجود\n` +
-    `Database: ${db.ready ? '✅ متصلة' : '❌ غير متصلة'}\n` +
-    `DB Error: ${db.error || 'لا يوجد'}\n` +
-    `FRIDA_AGENTS devices: ${devices.length ? devices.join(', ') : '❌ لا توجد'}\n`,
-    backKeyboard()
-  );
-});
+    except requests.exceptions.RequestException as e:
+        bot.send_message(chat_id, "عذراً، حدث خطأ أثناء الاتصال بنظام الدفع. يرجى التواصل مع الدعم الفني: +9647728257333")
 
-bot.action('main_menu', async (ctx) => {
-  await ctx.answerCbQuery();
-  await showMainMenu(ctx, '🔧 لوحة التحكم:');
-});
-
-bot.action('diagnostics', async (ctx) => {
-  await ctx.answerCbQuery();
-  const db = getDbStatus();
-  const devices = Object.keys(getAgents());
-  return ctx.editMessageText(
-    `🧪 فحص الإعدادات\n\n` +
-    `BOT_TOKEN: ✅ موجود\n` +
-    `Database: ${db.ready ? '✅ متصلة' : '❌ غير متصلة'}\n` +
-    `DB Error: ${db.error || 'لا يوجد'}\n` +
-    `FRIDA_AGENTS: ${devices.length ? '✅ ' + devices.join(', ') : '❌ فارغ أو JSON خطأ'}`,
-    backKeyboard()
-  );
-});
-
-bot.action('show_devices', async (ctx) => {
-  await ctx.answerCbQuery();
-  const devices = Object.keys(getAgents());
-
-  if (!devices.length) {
-    return ctx.editMessageText('❌ لا توجد أجهزة. تأكد من متغير FRIDA_AGENTS في Railway.', backKeyboard());
-  }
-
-  return ctx.editMessageText('📱 الأجهزة:', devicesKeyboard('select'));
-});
-
-bot.action('run_frida_menu', async (ctx) => {
-  await ctx.answerCbQuery();
-  const devices = Object.keys(getAgents());
-
-  if (!devices.length) {
-    return ctx.editMessageText('❌ لا توجد أجهزة. تأكد من متغير FRIDA_AGENTS في Railway.', backKeyboard());
-  }
-
-  return ctx.editMessageText('اختر جهازاً:', devicesKeyboard('run'));
-});
-
-bot.action('users_count', async (ctx) => {
-  await ctx.answerCbQuery();
-  try {
-    const count = await getUsersCount();
-    return ctx.editMessageText(`👥 المستخدمون: ${count}`, backKeyboard());
-  } catch (err) {
-    console.error('❌ users_count error:', err);
-    return ctx.editMessageText(`❌ قاعدة البيانات غير متصلة.\n\nالسبب: ${err.message}`, backKeyboard());
-  }
-});
-
-bot.action(/^select:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const device = ctx.match[1];
-  const url = getAgents()[device] || 'غير معروف';
-  return ctx.editMessageText(`📱 الجهاز: ${device}\n🔗 العنوان: ${url}`, backKeyboard());
-});
-
-bot.action(/^run:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const device = ctx.match[1];
-  const userId = ctx.from.id;
-
-  await ctx.editMessageText(`⏳ جاري التشغيل على ${device}...`);
-  const result = await runFridaScript(device, userId);
-  const status = result.startsWith('✅') ? 'success' : 'failed';
-
-  try {
-    await logFridaRun(userId, device, status, result);
-  } catch (err) {
-    console.error('⚠️ logFridaRun failed:', err.message);
-  }
-
-  return ctx.reply(result, backKeyboard());
-});
-
-bot.catch((err, ctx) => {
-  console.error('❌ Bot error full:', err);
-  const msg = `❌ صار خطأ بالبوت:\n${err.message || String(err)}\n\nاكتب /debug حتى تشوف فحص الإعدادات.`;
-  if (ctx) ctx.reply(msg).catch(() => {});
-});
-
-(async () => {
-  await initDB();
-  await bot.launch();
-  console.log('✅ Bot is running...');
-})();
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+bot.infinity_polling()
