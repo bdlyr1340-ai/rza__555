@@ -1,14 +1,11 @@
 {
-  "name": "telegram-bot-railway-fixed-v2",
-  "version": "1.0.1",
-  "type": "commonjs",
-  "main": "index.js",
+  "name": "openai-auto-register-bot",
+  "version": "1.0.0",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.5",
-    "pg": "^8.11.3",
-    "telegraf": "^4.15.3"
+    "node-telegram-bot-api": "^0.64.0",
+    "dotenv": "^16.3.1"
   }
 }
