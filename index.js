@@ -1,271 +1,178 @@
-require('dotenv').config();
-const axios = require('axios');
-const crypto = require('crypto');
+const TelegramBot = require('node-telegram-bot-api');
+const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-// ==========================================
-// الإعدادات البيئية (Environment Variables)
-// ==========================================
-const MAIL_DOMAIN = process.env.MAIL_DOMAIN || "";
-const MAIL_WORKER_BASE = (process.env.MAIL_WORKER_BASE || "").replace(/\/$/, "");
-const MAIL_ADMIN_PASSWORD = process.env.MAIL_ADMIN_PASSWORD || "";
-const TOKEN_OUTPUT_DIR = (process.env.TOKEN_OUTPUT_DIR || "").trim();
-const CLI_PROXY_AUTHS_DIR = (process.env.CLI_PROXY_AUTHS_DIR || "").trim();
+// ================== التهيئة ==================
+require('dotenv').config();
 
-const AUTH_URL = "https://auth.openai.com/oauth/authorize";
-const TOKEN_URL = "https://auth.openai.com/oauth/token";
-const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const DEFAULT_REDIRECT_URI = "http://localhost:1455/auth/callback";
-const DEFAULT_SCOPE = "openid email profile offline_access";
+const BOT_TOKEN = process.env.BOT_TOKEN;          // توكن البوت
+const PROXY = process.env.PROXY || '';            // بروكسي افتراضي
+const PYTHON_SCRIPT = 'script.py';                // اسم ملف السكريبت الخاص بك
 
-// ==========================================
-// دوال مساعدة (Helpers & Crypto)
-// ==========================================
-function randomString(length) {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-}
+// متغيرات البيئة التي يحتاجها السكريبت (من ملف .env)
+const MAIL_DOMAIN = process.env.MAIL_DOMAIN;
+const MAIL_WORKER_BASE = process.env.MAIL_WORKER_BASE;
+const MAIL_ADMIN_PASSWORD = process.env.MAIL_ADMIN_PASSWORD;
+const TOKEN_OUTPUT_DIR = process.env.TOKEN_OUTPUT_DIR || './tokens';
+const CLI_PROXY_AUTHS_DIR = process.env.CLI_PROXY_AUTHS_DIR || './auths';
 
-function getEmailAndToken() {
-    const prefix = randomString(10);
-    const email = `${prefix}@${MAIL_DOMAIN}`;
-    return { email, token: email };
-}
+// تأكد من وجود مجلد الإخراج
+if (!fs.existsSync(TOKEN_OUTPUT_DIR)) fs.mkdirSync(TOKEN_OUTPUT_DIR, { recursive: true });
+if (CLI_PROXY_AUTHS_DIR && !fs.existsSync(CLI_PROXY_AUTHS_DIR)) fs.mkdirSync(CLI_PROXY_AUTHS_DIR, { recursive: true });
 
-function base64UrlEncode(buffer) {
-    return buffer.toString('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=/g, '');
-}
+// ================== إنشاء البوت ==================
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-function sha256Base64Url(str) {
-    const hash = crypto.createHash('sha256').update(str).digest();
-    return base64UrlEncode(hash);
-}
+// حالة المستخدم لتخزين البروكسي الخاص به
+const userSessions = {};
 
-function randomState(bytes = 16) {
-    return base64UrlEncode(crypto.randomBytes(bytes));
-}
+// ================== لوحة المفاتيح الرئيسية ==================
+const mainMenu = {
+  reply_markup: {
+    inline_keyboard: [
+      [{ text: '🔄 تسجيل حساب جديد', callback_data: 'register' }],
+      [{ text: '📊 فحص التوكنات', callback_data: 'check_tokens' }],
+      [{ text: '🌐 تعيين البروكسي', callback_data: 'set_proxy' }],
+      [{ text: '🆘 مساعدة', callback_data: 'help' }]
+    ]
+  }
+};
 
-function pkceVerifier() {
-    return base64UrlEncode(crypto.randomBytes(32)); // 64 in original, but 32 bytes = 43 chars base64
-}
-
-function generatePassword(length = 16) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*';
-    let pass = '';
-    for (let i = 0; i < length; i++) pass += chars.charAt(Math.floor(Math.random() * chars.length));
-    return pass;
-}
-
-function generateOAuthUrl(redirectUri = DEFAULT_REDIRECT_URI, scope = DEFAULT_SCOPE) {
-    const state = randomState();
-    const codeVerifier = pkceVerifier();
-    const codeChallenge = sha256Base64Url(codeVerifier);
-
-    const params = new URLSearchParams({
-        client_id: CLIENT_ID,
-        response_type: "code",
-        redirect_uri: redirectUri,
-        scope: scope,
-        state: state,
-        code_challenge: codeChallenge,
-        code_challenge_method: "S256",
-        prompt: "login",
-        id_token_add_organizations: "true",
-        codex_cli_simplified_flow: "true"
-    });
-
-    return {
-        authUrl: `${AUTH_URL}?${params.toString()}`,
-        state,
-        codeVerifier,
-        redirectUri
-    };
-}
-
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// ==========================================
-// استخراج الكود البريدي (OTP)
-// ==========================================
-function extractOtpCode(content) {
-    if (!content) return "";
-    const patterns = [
-        /Your ChatGPT code is\s*(\d{6})/i,
-        /ChatGPT code is\s*(\d{6})/i,
-        /verification code to continue:\s*(\d{6})/i,
-        /Subject:.*?(\d{6})/i,
-        /(?<!\d)(\d{6})(?!\d)/
-    ];
-
-    for (const pattern of patterns) {
-        const match = content.match(pattern);
-        if (match) return match[1];
-    }
-    return "";
-}
-
-async function getOaiCode(email, seenIds = new Set()) {
-    process.stdout.write(`[*] 正在等待邮箱 ${email} 的验证码...`);
-    const headers = {
-        "x-admin-auth": MAIL_ADMIN_PASSWORD,
-        "Content-Type": "application/json"
+// ================== تشغيل السكريبت ==================
+function runPythonScript(proxy, userId) {
+  return new Promise((resolve, reject) => {
+    // تحضير متغيرات البيئة للعملية الفرعية
+    const env = {
+      ...process.env,
+      MAIL_DOMAIN,
+      MAIL_WORKER_BASE,
+      MAIL_ADMIN_PASSWORD,
+      TOKEN_OUTPUT_DIR,
+      CLI_PROXY_AUTHS_DIR
     };
 
-    for (let i = 0; i < 40; i++) {
-        process.stdout.write(".");
-        try {
-            const res = await axios.get(`${MAIL_WORKER_BASE}/admin/mails`, {
-                params: { limit: 5, offset: 0, address: email },
-                headers,
-                timeout: 15000
-            });
+    const proxyArg = proxy ? `--proxy "${proxy}"` : '';
+    const command = `python3 ${PYTHON_SCRIPT} --once ${proxyArg}`;
 
-            const results = res.data.results || [];
-            for (const mail of results) {
-                if (seenIds.has(mail.id)) continue;
-                seenIds.add(mail.id);
-                
-                const raw = mail.raw || "";
-                let content = raw;
-                const subjMatch = raw.match(/^Subject:\s*(.+)$/m);
-                if (subjMatch) content = subjMatch[1] + "\n" + raw;
-
-                const code = extractOtpCode(content);
-                if (code) {
-                    console.log(` 抓到啦! 验证码: ${code}`);
-                    return code;
-                }
-            }
-        } catch (error) {
-            // تجاهل الأخطاء والمحاولة مرة أخرى
-        }
-        await sleep(3000);
-    }
-    console.log(" 超时，未收到验证码");
-    return "";
-}
-
-// ==========================================
-// عملية التسجيل الأساسية (Registration Flow)
-// ==========================================
-async function run() {
-    const { email, token } = getEmailAndToken();
-    if (!email) return null;
-    
-    console.log(`[*] 成功获取临时邮箱与授权: ${email}`);
-    const oauth = generateOAuthUrl();
-    const password = generatePassword();
-    
-    // إعداد الـ Client للاتصال (Axios instance)
-    const client = axios.create({
-        timeout: 15000,
-        headers: {
-            "accept": "application/json",
-            "content-type": "application/json",
-        }
+    console.log(`[userId:${userId}] تشغيل: ${command}`);
+    exec(command, { env, cwd: __dirname }, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`[userId:${userId}] خطأ:`, stderr);
+        return reject(stderr || error.message);
+      }
+      resolve(stdout);
     });
-
-    try {
-        // الخطوة 1: الحصول على صفحة الـ Auth
-        const authResp = await client.get(oauth.authUrl, { maxRedirects: 0, validateStatus: () => true });
-        const cookies = authResp.headers['set-cookie'] || [];
-        let did = "";
-        cookies.forEach(c => {
-            if (c.includes('oai-did=')) did = c.split('oai-did=')[1].split(';')[0];
-        });
-
-        // الخطوة 2: تجاوز الـ Sentinel
-        console.log(`[*] Device ID: ${did}`);
-        const senToken = "dummy-token-placeholder"; // ملاحظة: هنا ستحتاج لتطبيق منطق Sentinel الكامل إذا لزم الأمر
-        const sentinelHeader = JSON.stringify({ p: "", t: "", c: senToken, id: did, flow: "authorize_continue" });
-
-        // الخطوة 3: إرسال طلب إنشاء الحساب
-        const signupResp = await client.post("https://auth.openai.com/api/accounts/authorize/continue", 
-            { username: { value: email, kind: "email" }, screen_hint: "signup" },
-            { headers: { "openai-sentinel-token": sentinelHeader } }
-        );
-
-        if (signupResp.status === 403) {
-            console.log("[Error] 403 Forbidden - قد تحتاج لاستخدام مكتبة تتخطى حماية Cloudflare مثل TLS-Client");
-            return null;
-        }
-
-        // الخطوة 4: إدخال الرقم السري
-        const pwdResp = await client.post("https://auth.openai.com/api/accounts/user/register", 
-            { username: email, password: password },
-            { headers: { "openai-sentinel-token": sentinelHeader } }
-        );
-
-        console.log(`[*] 提交注册(密码)状态: ${pwdResp.status}`);
-
-        // الخطوة 5: جلب كود التفعيل (OTP)
-        console.log("[*] 需要邮箱验证，开始等待验证码...");
-        const code = await getOaiCode(email);
-        if (!code) return null;
-
-        // الخطوة 6: تفعيل الكود
-        const codeResp = await client.post("https://auth.openai.com/api/accounts/email-otp/validate", 
-            { code: code },
-            { headers: { "openai-sentinel-token": sentinelHeader } }
-        );
-        console.log(`[*] 验证码校验状态: ${codeResp.status}`);
-
-        // إنشاء البيانات الوهمية
-        const names = ["Smith", "John", "David", "Ali", "Omar", "Sara"];
-        const randomName = names[Math.floor(Math.random() * names.length)];
-        const userInfo = { name: randomName, birthdate: "2000-01-01" };
-
-        // إتمام إنشاء الحساب
-        const createAccResp = await client.post("https://auth.openai.com/api/accounts/create_account", userInfo);
-        console.log(`[*] 账户创建状态: ${createAccResp.status}`);
-        
-        return { email, password };
-
-    } catch (error) {
-        console.log(`[Error] 运行时发生错误: ${error.message}`);
-        return null;
-    }
+  });
 }
 
-// ==========================================
-// نقطة تشغيل البوت الرئيسية (Main)
-// ==========================================
-async function main() {
-    console.log("[Info] Node.js OpenAI Auto-Registrar Started");
-    console.log("=".repeat(60));
+// ================== معالجة الأوامر الأساسية ==================
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+    `🤖 *بوت التسجيل التلقائي لـ OpenAI*\n` +
+    `الرجاء استخدام الأزرار أدناه للتحكم.`,
+    { parse_mode: 'Markdown', ...mainMenu }
+  );
+});
 
-    let count = 0;
-    while (true) {
-        count++;
-        console.log(`\n[${new Date().toLocaleTimeString()}] >>> 开始第 ${count} 次注册流程 <<<`);
-        
-        const account = await run();
-        
-        if (account) {
-            console.log(`[*] 成功! الحساب: ${account.email} | الباسورد: ${account.password}`);
-            const accountLine = `${account.email}----${account.password}\n`;
-            
-            // حفظ الحساب في ملف
-            fs.appendFileSync('accounts.txt', accountLine, 'utf8');
-            console.log("[*] 账号密码已追加至: accounts.txt");
+// ================== استقبال الأزرار ==================
+bot.on('callback_query', async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id;
+  const userId = callbackQuery.from.id;
+  const data = callbackQuery.data;
+
+  // استخدام البروكسي الخاص بالمستخدم إذا وجد
+  const userProxy = userSessions[userId] || PROXY;
+
+  switch (data) {
+    case 'register': {
+      const msg = await bot.sendMessage(chatId, '⏳ جارٍ بدء التسجيل...');
+      try {
+        const output = await runPythonScript(userProxy, userId);
+
+        // محاولة استخراج اسم ملف التوكن المحفوظ من المخرجات
+        const tokenFileMatch = output.match(/Token 已保存至: (.+)$/m);
+        const copyMatch = output.match(/Token 已拷贝至: (.+)$/m);
+        const successMatch = output.match(/成功! Token 已保存至: (.+)$/m);
+
+        const tokenPath = tokenFileMatch?.[1] || copyMatch?.[1] || successMatch?.[1];
+
+        if (tokenPath && fs.existsSync(tokenPath)) {
+          const tokenContent = fs.readFileSync(tokenPath, 'utf-8');
+          await bot.editMessageText(
+            `✅ تم التسجيل بنجاح!\n\n` +
+            `الملف: \`${path.basename(tokenPath)}\`\n` +
+            `المحتوى:\n\`\`\`json\n${tokenContent.substring(0, 300)}...\n\`\`\``,
+            { chat_id: chatId, message_id: msg.message_id, parse_mode: 'Markdown' }
+          );
+          // إرسال الملف كملف مرفق
+          await bot.sendDocument(chatId, tokenPath, {}, { filename: path.basename(tokenPath) });
         } else {
-            console.log("[-] 本次注册失败。");
+          await bot.editMessageText(
+            `⚠️ تم تشغيل السكريبت ولكن لم يتم العثور على ملف التوكن.\n\nالمخرجات:\n\`\`\`\n${output.substring(0, 1000)}\n\`\`\``,
+            { chat_id: chatId, message_id: msg.message_id, parse_mode: 'Markdown' }
+          );
         }
-
-        // إيقاف مؤقت عشوائي بين 5 و 15 ثانية لتجنب الحظر السريع
-        const waitTime = Math.floor(Math.random() * (15000 - 5000 + 1)) + 5000;
-        console.log(`[*] 休息 ${waitTime / 1000} 秒...`);
-        await sleep(waitTime);
+      } catch (err) {
+        await bot.editMessageText(
+          `❌ فشل التسجيل:\n\`\`\`\n${err.substring(0, 1000)}\n\`\`\``,
+          { chat_id: chatId, message_id: msg.message_id, parse_mode: 'Markdown' }
+        );
+      }
+      break;
     }
-}
 
-// تشغيل السكربت
-main();
+    case 'check_tokens': {
+      let statsText = '';
+      try {
+        const output = await runPythonScript(userProxy, userId, ['--check']);
+        const lines = output.split('\n');
+        const summaryLines = lines.filter(l => l.includes('共') || l.includes('有效') || l.includes('删除'));
+        statsText = summaryLines.join('\n');
+      } catch (e) {
+        statsText = 'فشل في تشغيل الفحص';
+      }
+
+      // إحصاء سريع من المجلد
+      if (fs.existsSync(CLI_PROXY_AUTHS_DIR)) {
+        const files = fs.readdirSync(CLI_PROXY_AUTHS_DIR).filter(f => f.startsWith('codex-'));
+        statsText += `\n\n📂 عدد ملفات التوكن في المجلد: ${files.length}`;
+      }
+
+      await bot.sendMessage(chatId, `📊 *حالة التوكنات*\n${statsText}`, { parse_mode: 'Markdown', ...mainMenu });
+      break;
+    }
+
+    case 'set_proxy': {
+      // طلب إدخال البروكسي
+      await bot.sendMessage(chatId, '🌐 الرجاء إرسال البروكسي بالصيغة: `http://user:pass@ip:port`', { parse_mode: 'Markdown' });
+      // ننتظر رد المستخدم
+      bot.once('message', (msg) => {
+        if (msg.chat.id === chatId && msg.text && msg.text.startsWith('http')) {
+          userSessions[userId] = msg.text.trim();
+          bot.sendMessage(chatId, `✅ تم تعيين البروكسي: \`${msg.text.trim()}\``, { parse_mode: 'Markdown' });
+        } else {
+          bot.sendMessage(chatId, '❌ صيغة غير صحيحة');
+        }
+      });
+      break;
+    }
+
+    case 'help': {
+      await bot.sendMessage(chatId,
+        `📖 *كيفية الاستخدام*\n` +
+        `- استخدم زر "تسجيل حساب جديد" لبدء عملية تسجيل.\n` +
+        `- بعد التسجيل الناجح سيتم إرسال ملف JSON.\n` +
+        `- يمكنك فحص التوكنات لمعرفة عدد الصالح منها.\n` +
+        `- لتعيين بروكسي مختلف، استخدم زر "تعيين البروكسي".`,
+        { parse_mode: 'Markdown', ...mainMenu }
+      );
+      break;
+    }
+  }
+
+  // تأكيد استلام الكول باك
+  await bot.answerCallbackQuery(callbackQuery.id);
+});
+
+console.log('✅ البوت يعمل...');
