@@ -1,15 +1,24 @@
-"""Telegram bot entrypoint using long polling."""
+"""نقطة تشغيل بوت تيليجرام — long polling."""
 from __future__ import annotations
 
 import logging
 import traceback
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from bot import config
-from bot.db.connection import init_pool, close_pool
-from bot.handlers import start as h_start, verify as h_verify, admin as h_admin
+from bot.db.connection import close_pool, init_pool
+from bot.handlers import admin as h_admin
+from bot.handlers import start as h_start
+from bot.handlers import verify as h_verify
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +33,7 @@ def _setup_logging() -> None:
 
 async def _post_init(app: Application) -> None:
     await init_pool()
+    # مهم جداً حتى لا يبقى Webhook قديم يمنع الـ polling
     await app.bot.delete_webhook(drop_pending_updates=True)
     me = await app.bot.get_me()
     log.info("Telegram bot connected: @%s", me.username)
@@ -46,6 +56,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 def build_app() -> Application:
     config.validate()
+
     app = (
         Application.builder()
         .token(config.BOT_TOKEN)
@@ -54,12 +65,14 @@ def build_app() -> Application:
         .build()
     )
 
+    # أوامر المستخدم
     app.add_handler(CommandHandler("start", h_start.cmd_start))
     app.add_handler(CommandHandler("ping", h_start.cmd_ping))
     app.add_handler(CommandHandler("help", h_start.cmd_help))
     app.add_handler(CommandHandler("me", h_start.cmd_me))
     app.add_handler(CommandHandler("ref", h_start.cmd_ref))
 
+    # أوامر الأدمن
     app.add_handler(CommandHandler("admin", h_admin.cmd_admin))
     app.add_handler(CommandHandler("stats", h_admin.cmd_stats))
     app.add_handler(CommandHandler("addcredit", h_admin.cmd_addcredit))
@@ -67,6 +80,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("unban", h_admin.cmd_unban))
     app.add_handler(CommandHandler("broadcast", h_admin.cmd_broadcast))
 
+    # أزرار ورسائل
     app.add_handler(CallbackQueryHandler(h_start.on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, h_verify.on_text))
     app.add_error_handler(on_error)
