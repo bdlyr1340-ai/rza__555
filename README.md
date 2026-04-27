@@ -1,5 +1,7 @@
 # RZA Telegram Bot - Railway Ready
 
+نسخة مرتبة لريلوي مع هيكل ملفات كامل وأزرار عربية.
+
 ## Railway variables
 
 ```env
@@ -19,11 +21,17 @@ python main.py
 
 ## Test
 
-Send:
+بعد النشر أرسل للبوت:
 
 ```text
 /ping
 /start
 ```
 
-This package keeps the full Telegram bot structure: handlers, database, buttons, admin commands, referral, and Railway files.
+## ملاحظات
+
+- تم ترتيب الملفات داخل مجلد `bot` حتى لا يصير تعارض باسم `db`.
+- تم إصلاح تشغيل Railway على Python.
+- تم إضافة `delete_webhook` حتى يشتغل Polling مباشرة.
+- الأزرار صارت عربية.
+- الروابط تُسجل في قاعدة البيانات وتصل إشعارات للأدمن إذا `ADMIN_IDS` مضبوط.
