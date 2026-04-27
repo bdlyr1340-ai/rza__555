@@ -57,13 +57,15 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
 
     if result.get("success"):
         await models.log_verification_finish(ver_id, user.id, success=True)
+        sheerid_step = result.get("step", "pending")
         reply = (
             "🎉 *تهانياً تم تفعيل جيمناي برو سنوي!*\n\n"
             f"📧 Gmail: `{result.get('gmail', '—')}`\n"
             f"👤 الشخص: `{result.get('student', '—')}`\n"
-            f"🎓 الجامعة: {result.get('school', '—')}\n"
+            f"🎓 الجامعة: `{result.get('school', '—')}`\n"
             f"📩 إيميل التحقق: `{result.get('email', '—')}`\n"
-            f"\nالحالة: {result.get('step', 'pending')}\n"
+            f"🔗 رقم التحقق: `{result.get('verificationId', '—')}`\n"
+            f"\nحالة SheerID: {sheerid_step}\n"
         )
         await progress_msg.edit_text(reply, parse_mode="Markdown", reply_markup=main_menu())
     else:
@@ -74,9 +76,15 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
             reply_markup=main_menu(),
         )
 
-    err_line = ""
+    extra_lines = ""
     if not result.get("success") and result.get("error"):
-        err_line = f"السبب: {result['error']}\n"
+        extra_lines += f"السبب: {result['error']}\n"
+    if result.get("step"):
+        extra_lines += f"حالة SheerID: {result['step']}\n"
+    if result.get("verificationId"):
+        extra_lines += f"رقم التحقق: {result['verificationId']}\n"
+    if result.get("redirect"):
+        extra_lines += f"رابط العرض: {result['redirect'][:80]}\n"
     admin_text = (
         "📥 طلب تحقق جديد (تلقائي)\n\n"
         f"المستخدم: {user.id}\n"
@@ -84,7 +92,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
         f"الخدمة: {meta['label']}\n"
         f"رقم الطلب: {ver_id}\n"
         f"النتيجة: {'نجاح ✅' if result.get('success') else 'فشل ❌'}\n"
-        f"{err_line}"
+        f"{extra_lines}"
     )
     for admin_id in config.ADMIN_IDS:
         try:

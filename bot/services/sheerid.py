@@ -1162,24 +1162,27 @@ async def verify_gemini_auto(
         log.info("Google login succeeded for %s", gmail)
 
         # ── Step 4: طريقة الدفع — SheerID create verification ──
-        await on_progress(_build_progress(3, detail="جاري إنشاء التحقق..."))
+        await on_progress(_build_progress(3, detail="جاري إنشاء التحقق في SheerID..."))
         async with httpx.AsyncClient(timeout=30) as client:
             create_data, create_status = await _api_request(
                 client, "POST",
                 "/verification",
                 {"programId": program_id},
             )
+            log.info("SheerID create: status=%s data=%s", create_status, str(create_data)[:300])
             if create_status not in (200, 201) or not create_data.get("verificationId"):
-                err_msg = "فشل إنشاء التحقق التلقائي"
+                err_msg = f"فشل إنشاء التحقق: HTTP {create_status}"
+                log.error("SheerID create failed: %s %s", create_status, create_data)
                 await on_progress(_build_progress(3, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
 
             vid = create_data["verificationId"]
             log.info("Gemini auto: created verification %s", vid)
-            await on_progress(_build_progress(4, detail="تم إنشاء التحقق، إرسال البيانات..."))
+            await on_progress(_build_progress(4, detail=f"تم إنشاء التحقق ({vid[:8]}...)، إرسال بيانات الطالب..."))
 
             # ── Step 5: إضافة طريقة دفع — submit student info ──
+            referer = f"{SHEERID_BASE}/verify/{program_id}/?verificationId={vid}"
             body = {
                 "firstName": first,
                 "lastName": last,
@@ -1192,7 +1195,7 @@ async def verify_gemini_auto(
                 "metadata": {
                     "marketConsentValue": False,
                     "verificationId": vid,
-                    "refererUrl": f"{SHEERID_BASE}/verify/{program_id}/?verificationId={vid}",
+                    "refererUrl": referer,
                     "flags": '{"collect-info-step-email-first":"default","doc-upload-considerations":"default","doc-upload-may24":"default","doc-upload-redesign-use-legacy-message-keys":false,"docUpload-assertion-checklist":"default","font-size":"default","include-cvec-field-france-student":"not-labeled-optional"}',
                     "submissionOptIn": (
                         "By submitting the personal information above, I acknowledge that my "
@@ -1207,13 +1210,16 @@ async def verify_gemini_auto(
                 f"/verification/{vid}/step/collectStudentPersonalInfo",
                 body,
             )
+            log.info("SheerID student info: status=%s step=%s", status, data.get("currentStep"))
             if status != 200:
                 err_msg = f"فشل إرسال بيانات الطالب: HTTP {status}"
+                log.error("SheerID student info failed: %s %s", status, str(data)[:500])
                 await on_progress(_build_progress(4, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
             if data.get("currentStep") == "error":
                 err_msg = f"خطأ SheerID: {data.get('errorIds', [])}"
+                log.error("SheerID student info error: %s", data)
                 await on_progress(_build_progress(4, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
@@ -1222,61 +1228,124 @@ async def verify_gemini_auto(
 
             # ── Step 6: التحقق من العرض — skip SSO + upload document ──
             step = data.get("currentStep", "")
+            log.info("SheerID after student info: step=%s", step)
             if step in ("sso", "collectStudentPersonalInfo"):
-                await _api_request(client, "DELETE", f"/verification/{vid}/step/sso")
+                sso_data, sso_status = await _api_request(client, "DELETE", f"/verification/{vid}/step/sso")
+                log.info("SheerID skip SSO: status=%s", sso_status)
 
             doc = _generate_student_id_image(first, last, uni["name"])
             upload_body = {"files": [{"fileName": "student_card.png", "mimeType": "image/png", "fileSize": len(doc)}]}
             data, status = await _api_request(client, "POST", f"/verification/{vid}/step/docUpload", upload_body)
+            log.info("SheerID docUpload: status=%s docs=%s", status, bool(data.get("documents")))
             if not data.get("documents"):
-                err_msg = "فشل الحصول على رابط الرفع"
+                err_msg = f"فشل الحصول على رابط الرفع (HTTP {status})"
+                log.error("SheerID docUpload failed: %s", str(data)[:500])
                 await on_progress(_build_progress(5, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
 
             upload_url = data["documents"][0].get("uploadUrl")
             if not upload_url or not await _upload_s3(client, upload_url, doc):
-                err_msg = "فشل رفع المستند"
+                err_msg = "فشل رفع المستند إلى S3"
                 await on_progress(_build_progress(5, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
 
-            data, _ = await _api_request(client, "POST", f"/verification/{vid}/step/completeDocUpload")
-            await on_progress(_build_progress(6, detail="تم رفع المستندات، المطالبة بالعرض..."))
+            log.info("SheerID doc uploaded to S3 successfully")
+            data, complete_status = await _api_request(client, "POST", f"/verification/{vid}/step/completeDocUpload")
+            final_step = data.get("currentStep", "unknown")
+            redirect_url = data.get("redirectUrl", "")
+            log.info(
+                "SheerID completeDocUpload: status=%s step=%s redirect=%s",
+                complete_status, final_step, redirect_url[:80] if redirect_url else "none",
+            )
+
+            await on_progress(_build_progress(6, detail=f"حالة التحقق: {final_step}"))
+
+            # Check if SheerID verification was actually approved
+            if final_step == "success" and redirect_url:
+                await on_progress(_build_progress(6, detail="تم التحقق بنجاح! المطالبة بالعرض..."))
+            elif final_step in ("docReview", "pending"):
+                await on_progress(_build_progress(6, detail=f"التحقق قيد المراجعة ({final_step})..."))
+            elif final_step == "error":
+                err_ids = data.get("errorIds", [])
+                err_msg = f"SheerID رفض التحقق: {err_ids}"
+                await on_progress(_build_progress(6, error=err_msg))
+                result = {"success": False, "error": err_msg}
+                return result
 
         # ── Step 7: المطالبة بالعرض — claim via redirect ──
-        redirect_url = data.get("redirectUrl", "")
         if redirect_url and page:
             try:
+                log.info("Navigating to redirect URL: %s", redirect_url)
                 await page.goto(redirect_url, wait_until="networkidle", timeout=30000)
                 await asyncio.sleep(3)
 
+                # Log what Google shows at the redirect URL
+                claim_url = page.url
+                claim_title = await page.title()
+                claim_text = await page.inner_text("body")
+                log.info(
+                    "Redirect page: URL=%s title=%s body_preview=%s",
+                    claim_url, claim_title, claim_text[:500],
+                )
+                await page.screenshot(path="/tmp/gemini_claim_page.png")
+
+                await on_progress(_build_progress(7, detail=f"صفحة العرض: {claim_title}"))
+
+                # Try to find and click claim/redeem buttons
+                claimed = False
                 for selector in [
-                    "button:has-text('Claim')", "button:has-text('Get')",
-                    "button:has-text('Continue')", "button:has-text('Start')",
-                    "a:has-text('Claim')", "a:has-text('Get')",
+                    "button:has-text('Claim')", "button:has-text('Redeem')",
+                    "button:has-text('Get')", "button:has-text('Continue')",
+                    "button:has-text('Start')", "button:has-text('Activate')",
+                    "a:has-text('Claim')", "a:has-text('Redeem')",
+                    "a:has-text('Get started')", "a:has-text('Activate')",
                 ]:
                     btn = page.locator(selector).first
                     if await btn.count() > 0:
+                        btn_text = await btn.text_content()
+                        log.info("Clicking claim button: '%s'", btn_text)
+                        await btn.click()
+                        await asyncio.sleep(4)
+                        claimed = True
+                        break
+
+                if not claimed:
+                    log.warning("No claim button found on redirect page")
+
+                after_claim_url = page.url
+                after_claim_title = await page.title()
+                log.info("After claim click: URL=%s title=%s", after_claim_url, after_claim_title)
+
+                await on_progress(_build_progress(7, detail=f"تم المطالبة ({after_claim_title})، معالجة الدفع..."))
+
+                # ── Step 8: معالجة الدفع — confirm subscription ──
+                await asyncio.sleep(2)
+                for selector in [
+                    "button:has-text('Subscribe')", "button:has-text('Confirm')",
+                    "button:has-text('Accept')", "button:has-text('Done')",
+                    "button:has-text('Start trial')", "button:has-text('Agree')",
+                ]:
+                    btn = page.locator(selector).first
+                    if await btn.count() > 0:
+                        btn_text = await btn.text_content()
+                        log.info("Clicking confirm button: '%s'", btn_text)
                         await btn.click()
                         await asyncio.sleep(3)
                         break
 
-                await on_progress(_build_progress(7, detail="تم المطالبة، معالجة الدفع..."))
-
-                # ── Step 8: معالجة الدفع — confirm subscription ──
-                for selector in [
-                    "button:has-text('Subscribe')", "button:has-text('Confirm')",
-                    "button:has-text('Accept')", "button:has-text('Done')",
-                ]:
-                    btn = page.locator(selector).first
-                    if await btn.count() > 0:
-                        await btn.click()
-                        await asyncio.sleep(2)
-                        break
+                final_url = page.url
+                final_title = await page.title()
+                log.info("Final state: URL=%s title=%s", final_url, final_title)
+                await page.screenshot(path="/tmp/gemini_final_page.png")
 
             except Exception as exc:
                 log.warning("Google claim redirect failed: %s", exc)
+                await on_progress(_build_progress(7, error=f"خطأ في المطالبة: {exc}"))
+        elif not redirect_url:
+            log.warning("No redirect URL from SheerID (step=%s)", final_step)
+            await on_progress(_build_progress(7, detail=f"لا يوجد رابط عرض — حالة التحقق: {final_step}"))
         else:
             await on_progress(_build_progress(7))
 
@@ -1292,8 +1361,9 @@ async def verify_gemini_auto(
             "email": student_email,
             "gmail": gmail,
             "school": uni["name"],
-            "step": data.get("currentStep", "pending"),
+            "step": final_step,
             "redirect": redirect_url,
+            "verificationId": vid,
         }
         return result
 
