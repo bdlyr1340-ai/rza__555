@@ -20,7 +20,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
     """Execute the full Gemini auto-verification after all credentials collected."""
     gmail = ctx.user_data.pop("gemini_email", "")
     gmail_password = ctx.user_data.pop("gemini_password", "")
-    totp_code = ctx.user_data.pop("gemini_2fa", "")
+    totp_secret = ctx.user_data.pop("gemini_2fa", "")
     ctx.user_data.pop("gemini_flow", None)
 
     meta = SERVICE_REGISTRY["google_one"]
@@ -43,7 +43,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
             _update_progress,
             gmail=gmail,
             gmail_password=gmail_password,
-            totp_code=totp_code,
+            totp_secret=totp_secret,
         )
     except Exception as exc:
         log.exception("Gemini auto crashed ver_id=%s", ver_id)
@@ -131,7 +131,9 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             ctx.user_data["gemini_flow"] = "2fa"
             await msg.reply_text(
                 "✅ تم حفظ كلمة المرور\n\n"
-                "🔐 *الخطوة 3/3:* أرسل رمز التحقق (2FA):\n\n"
+                "🔐 *الخطوة 3/3:* أرسل مفتاح 2FA السري (Secret Key):\n\n"
+                "المفتاح يكون نص مثل: `JBSWY3DPEHPK3PXP`\n"
+                "تلاقيه في إعدادات Google Authenticator\n\n"
                 "_إذا ما عندك 2FA أرسل: skip_",
                 parse_mode="Markdown",
             )
@@ -143,8 +145,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         if gemini_step == "2fa":
-            totp = text if text.lower() != "skip" else "000000"
-            ctx.user_data["gemini_2fa"] = totp
+            totp_secret = text.strip() if text.lower() != "skip" else ""
+            ctx.user_data["gemini_2fa"] = totp_secret
             # Delete the 2FA message for privacy
             try:
                 await msg.delete()

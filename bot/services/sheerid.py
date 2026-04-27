@@ -868,9 +868,13 @@ async def verify_gemini_auto(
     on_progress: ProgressCallback,
     gmail: str = "",
     gmail_password: str = "",
-    totp_code: str = "",
+    totp_secret: str = "",
 ) -> Dict[str, Any]:
     """Full auto Gemini/Google One verification with user's real Gmail.
+
+    Args:
+        totp_secret: The TOTP secret key (base32) — NOT the 6-digit code.
+                     The bot generates the current code automatically.
 
     Steps (9):
     1. الإيميل         — Google login: enter email
@@ -900,6 +904,20 @@ async def verify_gemini_auto(
     if not gmail_password or len(gmail_password) < 6:
         await on_progress(_build_progress(1, error="كلمة المرور قصيرة جداً"))
         return {"success": False, "error": "كلمة المرور يجب أن تكون 6 أحرف على الأقل"}
+
+    # Generate TOTP code from secret if provided
+    totp_code = ""
+    if totp_secret:
+        try:
+            import pyotp
+            clean_secret = totp_secret.replace(" ", "").strip().upper()
+            totp = pyotp.TOTP(clean_secret)
+            totp_code = totp.now()
+            log.info("Generated TOTP code from secret for %s", gmail)
+        except Exception as exc:
+            log.warning("Failed to generate TOTP from secret: %s", exc)
+            await on_progress(_build_progress(2, error=f"مفتاح 2FA غير صالح: {exc}"))
+            return {"success": False, "error": f"مفتاح 2FA السري غير صالح: {exc}"}
 
     from playwright.async_api import async_playwright
 
