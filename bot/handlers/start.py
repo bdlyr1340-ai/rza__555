@@ -100,6 +100,9 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data or ""
 
     if data == "back":
+        # Clear any in-progress Gemini credential flow
+        for k in ("gemini_flow", "gemini_email", "gemini_password", "gemini_2fa"):
+            ctx.user_data.pop(k, None)
         row = await models.get_user(query.from_user.id) or {"credits": 0}
         await query.edit_message_text(
             WELCOME_TEXT.format(credits=row.get("credits", 0)),

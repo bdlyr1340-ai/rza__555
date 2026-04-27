@@ -164,9 +164,9 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    url_service = detect_service_from_url(url)
     pending = ctx.user_data.pop("pending_service", None)
-    service_key = url_service or pending
+    url_service = detect_service_from_url(url)
+    service_key = pending or url_service
     if not service_key or service_key not in SERVICE_REGISTRY:
         await msg.reply_text(
             "❓ ما گدرت أحدد نوع الخدمة من الرابط. اختار الخدمة من القائمة:",
