@@ -1,7 +1,7 @@
-"""Database model helpers."""
+"""دوال التعامل مع الجداول."""
 from __future__ import annotations
 
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from bot import config
 from bot.db.connection import get_pool
@@ -15,11 +15,11 @@ async def upsert_user(
 ) -> Dict[str, Any]:
     pool = get_pool()
     async with pool.acquire() as c:
-        existing = await c.fetchrow("SELECT * FROM rza_users WHERE user_id = $1", user_id)
+        existing = await c.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
         if existing:
             row = await c.fetchrow(
                 """
-                UPDATE rza_users
+                UPDATE users
                    SET username = $2, first_name = $3, last_seen_at = NOW()
                  WHERE user_id = $1
              RETURNING *
@@ -30,7 +30,7 @@ async def upsert_user(
 
         row = await c.fetchrow(
             """
-            INSERT INTO rza_users (user_id, username, first_name, credits, referred_by)
+            INSERT INTO users (user_id, username, first_name, credits, referred_by)
             VALUES ($1, $2, $3, $4, $5)
             RETURNING *
             """,
@@ -40,12 +40,12 @@ async def upsert_user(
         if referred_by and referred_by != user_id:
             try:
                 await c.execute(
-                    "INSERT INTO rza_referrals (referrer_id, referred_id) VALUES ($1, $2) "
+                    "INSERT INTO referrals (referrer_id, referred_id) VALUES ($1, $2) "
                     "ON CONFLICT (referred_id) DO NOTHING",
                     referred_by, user_id,
                 )
                 await c.execute(
-                    "UPDATE rza_users SET credits = credits + $1 WHERE user_id = $2",
+                    "UPDATE users SET credits = credits + $1 WHERE user_id = $2",
                     config.REFERRAL_BONUS, referred_by,
                 )
             except Exception:
@@ -56,7 +56,7 @@ async def upsert_user(
 async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     pool = get_pool()
     async with pool.acquire() as c:
-        row = await c.fetchrow("SELECT * FROM rza_users WHERE user_id = $1", user_id)
+        row = await c.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
         return dict(row) if row else None
 
 
@@ -64,7 +64,7 @@ async def add_credits(user_id: int, amount: int) -> int:
     pool = get_pool()
     async with pool.acquire() as c:
         row = await c.fetchrow(
-            "UPDATE rza_users SET credits = credits + $1 WHERE user_id = $2 RETURNING credits",
+            "UPDATE users SET credits = credits + $1 WHERE user_id = $2 RETURNING credits",
             amount, user_id,
         )
         return int(row["credits"]) if row else 0
@@ -74,7 +74,7 @@ async def deduct_credit(user_id: int) -> bool:
     pool = get_pool()
     async with pool.acquire() as c:
         row = await c.fetchrow(
-            "UPDATE rza_users SET credits = credits - 1 WHERE user_id = $1 AND credits > 0 RETURNING credits",
+            "UPDATE users SET credits = credits - 1 WHERE user_id = $1 AND credits > 0 RETURNING credits",
             user_id,
         )
         return row is not None
@@ -83,7 +83,7 @@ async def deduct_credit(user_id: int) -> bool:
 async def set_banned(user_id: int, banned: bool) -> None:
     pool = get_pool()
     async with pool.acquire() as c:
-        await c.execute("UPDATE rza_users SET is_banned = $1 WHERE user_id = $2", banned, user_id)
+        await c.execute("UPDATE users SET is_banned = $1 WHERE user_id = $2", banned, user_id)
 
 
 async def is_banned(user_id: int) -> bool:
@@ -94,7 +94,7 @@ async def is_banned(user_id: int) -> bool:
 async def all_user_ids() -> List[int]:
     pool = get_pool()
     async with pool.acquire() as c:
-        rows = await c.fetch("SELECT user_id FROM rza_users WHERE is_banned = FALSE")
+        rows = await c.fetch("SELECT user_id FROM users WHERE is_banned = FALSE")
         return [int(r["user_id"]) for r in rows]
 
 
@@ -102,12 +102,12 @@ async def log_verification_start(user_id: int, service: str, url: str) -> int:
     pool = get_pool()
     async with pool.acquire() as c:
         row = await c.fetchrow(
-            "INSERT INTO rza_verifications (user_id, service, sheerid_url, status) "
+            "INSERT INTO verifications (user_id, service, sheerid_url, status) "
             "VALUES ($1, $2, $3, 'pending') RETURNING id",
             user_id, service, url,
         )
         await c.execute(
-            "UPDATE rza_users SET total_verifications = total_verifications + 1 WHERE user_id = $1",
+            "UPDATE users SET total_verifications = total_verifications + 1 WHERE user_id = $1",
             user_id,
         )
         return int(row["id"])
@@ -120,12 +120,12 @@ async def log_verification_finish(
     status = "success" if success else "failed"
     async with pool.acquire() as c:
         await c.execute(
-            "UPDATE rza_verifications SET status = $1, error_message = $2 WHERE id = $3",
+            "UPDATE verifications SET status = $1, error_message = $2 WHERE id = $3",
             status, error, verification_id,
         )
         if success:
             await c.execute(
-                "UPDATE rza_users SET successful_verifications = successful_verifications + 1 WHERE user_id = $1",
+                "UPDATE users SET successful_verifications = successful_verifications + 1 WHERE user_id = $1",
                 user_id,
             )
 
@@ -133,14 +133,14 @@ async def log_verification_finish(
 async def admin_stats() -> Dict[str, Any]:
     pool = get_pool()
     async with pool.acquire() as c:
-        users_total = await c.fetchval("SELECT COUNT(*) FROM rza_users")
-        users_today = await c.fetchval("SELECT COUNT(*) FROM rza_users WHERE created_at::date = CURRENT_DATE")
-        ver_total = await c.fetchval("SELECT COUNT(*) FROM rza_verifications")
-        ver_today = await c.fetchval("SELECT COUNT(*) FROM rza_verifications WHERE created_at::date = CURRENT_DATE")
-        ver_success = await c.fetchval("SELECT COUNT(*) FROM rza_verifications WHERE status = 'success'")
+        users_total = await c.fetchval("SELECT COUNT(*) FROM users")
+        users_today = await c.fetchval("SELECT COUNT(*) FROM users WHERE created_at::date = CURRENT_DATE")
+        ver_total = await c.fetchval("SELECT COUNT(*) FROM verifications")
+        ver_today = await c.fetchval("SELECT COUNT(*) FROM verifications WHERE created_at::date = CURRENT_DATE")
+        ver_success = await c.fetchval("SELECT COUNT(*) FROM verifications WHERE status = 'success'")
         per_service = await c.fetch(
             "SELECT service, COUNT(*) AS n, COUNT(*) FILTER (WHERE status = 'success') AS ok "
-            "FROM rza_verifications GROUP BY service ORDER BY n DESC"
+            "FROM verifications GROUP BY service ORDER BY n DESC"
         )
     return {
         "users_total": users_total or 0,

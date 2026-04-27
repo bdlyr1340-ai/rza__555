@@ -1,36 +1,37 @@
--- Safe bot tables. Prefix avoids conflict with old Railway tables.
+-- جداول البوت — تُنشأ وتُصلح تلقائياً عند أول تشغيل
 
-CREATE TABLE IF NOT EXISTS rza_users (
-    user_id BIGINT PRIMARY KEY,
-    username TEXT,
-    first_name TEXT,
-    credits INTEGER NOT NULL DEFAULT 3,
-    total_verifications INTEGER NOT NULL DEFAULT 0,
-    successful_verifications INTEGER NOT NULL DEFAULT 0,
-    referred_by BIGINT,
-    is_banned BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY
 );
 
-CREATE TABLE IF NOT EXISTS rza_verifications (
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS credits INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS total_verifications INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS successful_verifications INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS verifications (
     id SERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL REFERENCES rza_users(user_id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     service TEXT NOT NULL,
-    sheerid_url TEXT,
+    sheerid_url TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     error_message TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_rza_verifications_user ON rza_verifications(user_id);
-CREATE INDEX IF NOT EXISTS idx_rza_verifications_created ON rza_verifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_verifications_user ON verifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_verifications_created ON verifications(created_at DESC);
 
-CREATE TABLE IF NOT EXISTS rza_referrals (
+CREATE TABLE IF NOT EXISTS referrals (
     id SERIAL PRIMARY KEY,
     referrer_id BIGINT NOT NULL,
     referred_id BIGINT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_rza_referrals_referrer ON rza_referrals(referrer_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id);

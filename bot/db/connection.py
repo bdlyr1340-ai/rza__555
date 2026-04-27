@@ -1,4 +1,4 @@
-"""PostgreSQL connection using asyncpg."""
+"""اتصال PostgreSQL باستخدام asyncpg + تشغيل المهاجرات."""
 from __future__ import annotations
 
 import logging
@@ -18,7 +18,7 @@ async def init_pool() -> asyncpg.Pool:
     if _pool is not None:
         return _pool
 
-    log.info("Connecting to PostgreSQL...")
+    log.info("Connecting to database...")
     _pool = await asyncpg.create_pool(
         dsn=config.DATABASE_URL,
         min_size=1,
@@ -29,8 +29,7 @@ async def init_pool() -> asyncpg.Pool:
     sql = (Path(__file__).parent / "migrations.sql").read_text(encoding="utf-8")
     async with _pool.acquire() as conn:
         await conn.execute(sql)
-
-    log.info("Database ready.")
+    log.info("Database is ready.")
     return _pool
 
 
