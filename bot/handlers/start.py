@@ -1,4 +1,4 @@
-"""Start/help/account handlers."""
+"""أمر /start والقائمة الرئيسية."""
 from __future__ import annotations
 
 import logging
@@ -8,21 +8,26 @@ from telegram.ext import ContextTypes
 from bot import config
 from bot.db import models
 from bot.services import SERVICE_REGISTRY
-from bot.utils.keyboards import main_menu, back_menu
+from bot.utils.keyboards import back_menu, main_menu
 
 log = logging.getLogger(__name__)
 
 WELCOME_TEXT = (
     "👋 *أهلاً بيك بالبوت*\n\n"
-    "اختر خدمة من الأزرار بالأسفل أو استخدم الأوامر.\n\n"
+    "اختر الخدمة المطلوبة من الأزرار بالأسفل.\n"
+    "وتگدر ترسل الرابط بعد اختيار الخدمة حتى ينحفظ طلبك بقاعدة البيانات.\n\n"
     "💎 *رصيدك الحالي:* `{credits}`\n"
 )
 
 HELP_TEXT = (
-    "📖 *الأوامر*\n\n"
+    "📖 *دليل الاستخدام*\n\n"
+    "• اضغط على الخدمة من الأزرار.\n"
+    "• أرسل الرابط بعدها برسالة عادية.\n"
+    "• البوت يحفظ الطلب ويربطه بحسابك وقاعدة البيانات.\n\n"
+    "*الأوامر:*\n"
     "/start — القائمة الرئيسية\n"
     "/ping — فحص استجابة البوت\n"
-    "/me — عرض الحساب والرصيد\n"
+    "/me — حسابي ورصيدي\n"
     "/ref — رابط الدعوة\n"
     "/help — المساعدة"
 )
@@ -31,11 +36,17 @@ HELP_TEXT = (
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     args = ctx.args or []
+
     referred_by = None
     if args and args[0].startswith("ref_") and args[0][4:].isdigit():
         referred_by = int(args[0][4:])
 
-    row = await models.upsert_user(user.id, user.username, user.first_name, referred_by)
+    row = await models.upsert_user(
+        user_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        referred_by=referred_by,
+    )
     if row.get("is_banned"):
         await update.effective_message.reply_text("🚫 حسابك محظور من استخدام البوت.")
         return
@@ -64,7 +75,7 @@ async def cmd_me(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• المعرّف: `{row['user_id']}`\n"
         f"• الاسم: {row.get('first_name') or '-'}\n"
         f"• الرصيد: *{row['credits']}*\n"
-        f"• إجمالي العمليات: {row['total_verifications']}\n"
+        f"• إجمالي الطلبات: {row['total_verifications']}\n"
         f"• الناجحة: {row['successful_verifications']}\n"
     )
     await update.effective_message.reply_markdown(text, reply_markup=back_menu())
@@ -117,7 +128,7 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         me = await ctx.bot.get_me()
         link = f"https://t.me/{me.username}?start=ref_{query.from_user.id}"
         await query.edit_message_text(
-            f"🎁 *رابط الدعوة*\n\n`{link}`\n\nكل صديق يبدأ البوت = *+{config.REFERRAL_BONUS} رصيد*",
+            f"🎁 *رابط الدعوة*\n\nشارك:\n`{link}`\n\nكل صديق يبدأ البوت = *+{config.REFERRAL_BONUS} رصيد*",
             parse_mode="Markdown",
             reply_markup=back_menu(),
         )
@@ -132,7 +143,8 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx.user_data["pending_service"] = key
         await query.edit_message_text(
             f"✅ اخترت: *{meta['label']}*\n\n"
-            "📨 أرسل الرابط أو ارجع للقائمة.",
+            f"_{meta['description']}_\n\n"
+            "📨 الآن أرسل الرابط برسالة عادية حتى ينحفظ طلبك.",
             parse_mode="Markdown",
             reply_markup=back_menu(),
         )

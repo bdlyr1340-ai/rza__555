@@ -1,12 +1,16 @@
-"""Admin commands."""
+"""أوامر الأدمن."""
 from __future__ import annotations
 
 import asyncio
+import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from bot import config
 from bot.db import models
+
+log = logging.getLogger(__name__)
 
 
 def _is_admin(user_id: int) -> bool:
@@ -34,8 +38,8 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     lines = [
         "📊 *الإحصائيات*",
         f"المستخدمون: *{s['users_total']}* (اليوم: {s['users_today']})",
-        f"العمليات: *{s['ver_total']}* (اليوم: {s['ver_today']})",
-        f"نسبة النجاح: *{rate:.1f}%*",
+        f"الطلبات: *{s['ver_total']}* (اليوم: {s['ver_today']})",
+        f"نسبة النجاح الكلية: *{rate:.1f}%*",
         "",
         "*حسب الخدمة:*",
     ]
