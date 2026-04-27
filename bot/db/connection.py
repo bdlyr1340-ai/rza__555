@@ -28,11 +28,15 @@ async def init_pool() -> asyncpg.Pool:
 
     sql = (Path(__file__).parent / "migrations.sql").read_text(encoding="utf-8")
     async with _pool.acquire() as conn:
-        for statement in sql.split(";"):
+        for idx, statement in enumerate(sql.split(";")):
             lines = [l for l in statement.splitlines() if not l.strip().startswith("--")]
             cleaned = "\n".join(lines).strip()
             if cleaned:
-                await conn.execute(cleaned)
+                try:
+                    await conn.execute(cleaned)
+                except Exception as exc:
+                    log.error("Migration statement %d failed: %s\n  SQL: %s", idx, exc, cleaned[:120])
+                    raise
     log.info("Database is ready.")
     return _pool
 
