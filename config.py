@@ -1,43 +1,38 @@
-"""تحميل إعدادات البوت من المتغيرات البيئية."""
 import os
 from typing import List
 
 
-def _parse_admin_ids(raw: str) -> List[int]:
-    if not raw:
-        return []
-    out = []
-    for part in raw.replace(";", ",").split(","):
+def _parse_admin_ids(value: str) -> List[int]:
+    ids: List[int] = []
+    for part in (value or "").replace(";", ",").split(","):
         part = part.strip()
         if part.isdigit():
-            out.append(int(part))
-    return out
+            ids.append(int(part))
+    return ids
 
 
-# ===== Telegram =====
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_IDS: List[int] = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
-# ===== Database (Railway يُولّد DATABASE_URL تلقائياً) =====
-DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
 
-# ===== Credits =====
-DEFAULT_CREDITS: int = int(os.getenv("DEFAULT_CREDITS", "3"))
-REFERRAL_BONUS: int = int(os.getenv("REFERRAL_BONUS", "5"))
-
-# ===== Misc =====
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+ADMIN_IDS = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+DEFAULT_CREDITS = _int_env("DEFAULT_CREDITS", 3)
+REFERRAL_BONUS = _int_env("REFERRAL_BONUS", 5)
+PORT = _int_env("PORT", 8080)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
 
 
 def validate() -> None:
-    """يتحقق من توفر المتغيرات الإلزامية."""
     missing = []
     if not BOT_TOKEN:
         missing.append("BOT_TOKEN")
     if not DATABASE_URL:
         missing.append("DATABASE_URL")
     if missing:
-        raise SystemExit(
-            "❌ المتغيرات البيئية التالية مفقودة: " + ", ".join(missing)
-            + "\nراجع .env.example"
-        )
+        raise RuntimeError("Missing environment variables: " + ", ".join(missing))
