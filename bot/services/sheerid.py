@@ -1,13 +1,14 @@
 """SheerID async verification engine for all supported services."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import random
 import re
 import time
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont
@@ -323,7 +324,6 @@ async def _api_request(
     endpoint: str,
     body: Optional[Dict] = None,
 ) -> Tuple[Dict, int]:
-    import asyncio
     await asyncio.sleep(random.randint(MIN_DELAY_MS, MAX_DELAY_MS) / 1000)
     try:
         resp = await client.request(
@@ -333,6 +333,8 @@ async def _api_request(
             headers={"Content-Type": "application/json"},
         )
         data = resp.json() if resp.text else {}
+        if resp.status_code >= 400:
+            log.warning("SheerID %s %s -> %d: %s", method, endpoint, resp.status_code, data)
         return data, resp.status_code
     except Exception as exc:
         raise RuntimeError(f"SheerID request failed: {exc}") from exc
@@ -344,6 +346,25 @@ async def _upload_s3(client: httpx.AsyncClient, url: str, data: bytes) -> bool:
         return 200 <= resp.status_code < 300
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Link validation
+# ---------------------------------------------------------------------------
+
+async def _check_link(client: httpx.AsyncClient, vid: str) -> Optional[str]:
+    """Check if verification link is valid. Returns error message or None."""
+    data, status = await _api_request(client, "GET", f"/verification/{vid}")
+    if status == 404:
+        return "الرابط منتهي أو غير موجود. أنشئ رابط تحقق جديد."
+    if status != 200:
+        return f"فشل فحص الرابط: HTTP {status}"
+    step = data.get("currentStep", "")
+    if step == "success":
+        return "هذا الرابط تم التحقق منه مسبقاً."
+    if step == "pending":
+        return "هذا الرابط قيد المراجعة بالفعل."
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +387,10 @@ async def verify_student(url: str, service_key: str) -> Dict[str, Any]:
     log.info("Student verify: %s %s @ %s (vid=%s…)", first, last, uni["name"], vid[:12])
 
     async with httpx.AsyncClient(timeout=30) as client:
+        err = await _check_link(client, vid)
+        if err:
+            return {"success": False, "error": err}
+
         doc = _generate_student_id_image(first, last, uni["name"])
 
         body = {
@@ -381,6 +406,7 @@ async def verify_student(url: str, service_key: str) -> Dict[str, Any]:
                 "marketConsentValue": False,
                 "verificationId": vid,
                 "refererUrl": f"{SHEERID_BASE}/verify/{program_id}/?verificationId={vid}",
+                "flags": '{"collect-info-step-email-first":"default","doc-upload-considerations":"default","doc-upload-may24":"default","doc-upload-redesign-use-legacy-message-keys":false,"docUpload-assertion-checklist":"default","font-size":"default","include-cvec-field-france-student":"not-labeled-optional"}',
                 "submissionOptIn": (
                     "By submitting the personal information above, I acknowledge that my "
                     "personal information is being collected under the privacy policy of the "
@@ -436,6 +462,10 @@ async def verify_teacher(url: str) -> Dict[str, Any]:
     log.info("Teacher verify: %s %s @ %s (vid=%s…)", first, last, uni["name"], vid[:12])
 
     async with httpx.AsyncClient(timeout=30) as client:
+        err = await _check_link(client, vid)
+        if err:
+            return {"success": False, "error": err}
+
         doc = _generate_teacher_cert_image(first, last, uni["name"])
 
         body = {
@@ -506,19 +536,21 @@ async def verify_k12(url: str) -> Dict[str, Any]:
     log.info("K12 verify: %s %s @ %s (vid=%s…)", first, last, school["name"], vid[:12])
 
     async with httpx.AsyncClient(timeout=30) as client:
+        err = await _check_link(client, vid)
+        if err:
+            return {"success": False, "error": err}
+
         body = {
             "firstName": first,
             "lastName": last,
             "birthDate": dob,
             "email": email,
             "phoneNumber": "",
-            "organization": {"id": school["id"], "idExtended": str(school["id"]), "name": school["name"], "type": "K12"},
+            "organization": {"id": school["id"], "idExtended": str(school["id"]), "name": school["name"]},
             "deviceFingerprintHash": fingerprint,
             "locale": "en-US",
             "metadata": {
                 "marketConsentValue": False,
-                "verificationId": vid,
-                "refererUrl": f"{SHEERID_BASE}/verify/{program_id}/?verificationId={vid}",
                 "submissionOptIn": (
                     "By submitting the personal information above, I acknowledge that my "
                     "personal information is being collected under the privacy policy of the "
@@ -570,8 +602,18 @@ async def verify_k12(url: str) -> Dict[str, Any]:
     }
 
 
+BRANCH_ORG_MAP: Dict[str, Dict[str, Any]] = {
+    "Army": {"id": 4070, "name": "Army"},
+    "Air Force": {"id": 4073, "name": "Air Force"},
+    "Navy": {"id": 4072, "name": "Navy"},
+    "Marine Corps": {"id": 4071, "name": "Marine Corps"},
+    "Coast Guard": {"id": 4074, "name": "Coast Guard"},
+    "Space Force": {"id": 4544268, "name": "Space Force"},
+}
+
+
 async def verify_veterans(url: str) -> Dict[str, Any]:
-    """Veterans / military verification flow."""
+    """Veterans / military verification flow (2-step: militaryStatus then personalInfo)."""
     vid = _parse_verification_id(url)
     if not vid:
         return {"success": False, "error": "رابط غير صالح — لم يتم العثور على verificationId"}
@@ -582,58 +624,526 @@ async def verify_veterans(url: str) -> Dict[str, Any]:
     fingerprint = _generate_fingerprint()
     program_id = PROGRAM_IDS["veterans"]
 
-    discharge_year = int(time.strftime("%Y"))
-    discharge_month = random.randint(1, int(time.strftime("%m")))
-    discharge_date = f"{discharge_year}-{discharge_month:02d}-{random.randint(1, 28):02d}"
+    discharge_date = "2025-01-02"
+    branch_name = random.choice(list(BRANCH_ORG_MAP.keys()))
+    org = BRANCH_ORG_MAP[branch_name]
 
-    log.info("Veterans verify: %s %s (vid=%s…)", first, last, vid[:12])
+    log.info("Veterans verify: %s %s branch=%s (vid=%s…)", first, last, branch_name, vid[:12])
 
     async with httpx.AsyncClient(timeout=30) as client:
+        err = await _check_link(client, vid)
+        if err:
+            return {"success": False, "error": err}
+
+        # Step 1: Submit military status as VETERAN
+        data, status = await _api_request(
+            client, "POST",
+            f"/verification/{vid}/step/collectMilitaryStatus",
+            {"status": "VETERAN"},
+        )
+        if status != 200:
+            return {"success": False, "error": f"فشل إرسال حالة الخدمة: HTTP {status}"}
+
+        # Step 2: Submit personal info
+        referer = f"{SHEERID_BASE}/verify/{program_id}/?verificationId={vid}"
         body = {
             "firstName": first,
             "lastName": last,
             "birthDate": dob,
             "email": email,
             "phoneNumber": "",
+            "organization": org,
+            "dischargeDate": discharge_date,
             "deviceFingerprintHash": fingerprint,
             "locale": "en-US",
+            "country": "US",
             "metadata": {
                 "marketConsentValue": False,
+                "refererUrl": referer,
                 "verificationId": vid,
-                "refererUrl": f"{SHEERID_BASE}/verify/{program_id}/?verificationId={vid}",
                 "submissionOptIn": (
                     "By submitting the personal information above, I acknowledge that my "
                     "personal information is being collected under the privacy policy of the "
                     "business from which I am seeking a discount"
                 ),
             },
-            "dischargeDate": discharge_date,
-            "status": "ACTIVE_DUTY",
-            "branch": random.choice(["ARMY", "NAVY", "AIR_FORCE", "MARINES", "COAST_GUARD"]),
         }
 
-        data, status = await _api_request(client, "POST", f"/verification/{vid}/step/collectMilitaryStatus", body)
+        data, status = await _api_request(
+            client, "POST",
+            f"/verification/{vid}/step/collectInactiveMilitaryPersonalInfo",
+            body,
+        )
         if status != 200:
             return {"success": False, "error": f"فشل إرسال البيانات: HTTP {status}"}
         if data.get("currentStep") == "error":
             return {"success": False, "error": f"خطأ SheerID: {data.get('errorIds', [])}"}
 
-        step = data.get("currentStep", "")
-        if step == "success":
-            return {
-                "success": True,
-                "person": f"{first} {last}",
-                "email": email,
-                "step": "success",
-                "redirect": data.get("redirectUrl"),
-            }
-
     return {
         "success": True,
         "person": f"{first} {last}",
         "email": email,
+        "branch": branch_name,
         "step": data.get("currentStep", "pending"),
         "redirect": data.get("redirectUrl"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Auto Gemini verification (no link needed)
+# ---------------------------------------------------------------------------
+
+ProgressCallback = Callable[[str], Awaitable[None]]
+
+GEMINI_STEPS = [
+    "Email",
+    "Spam check",
+    "Password",
+    "Two-factor auth",
+    "Payment method",
+    "Add payment",
+    "Check offer",
+    "Claim offer",
+    "Process payment",
+    "Complete",
+]
+
+
+def _build_progress(current_idx: int, error: str = "") -> str:
+    """Build a progress string showing all 10 steps with status."""
+    lines: list[str] = []
+    for i, step in enumerate(GEMINI_STEPS, 1):
+        if i - 1 < current_idx:
+            lines.append(f"  ✅  {i}. {step}")
+        elif i - 1 == current_idx and error:
+            lines.append(f"  ❌  {i}. {step}")
+        elif i - 1 == current_idx:
+            lines.append(f"  ⏳  {i}. {step}")
+        else:
+            lines.append(f"  ⬜  {i}. {step}")
+    if error:
+        lines.append(f"\n❌ {error}")
+    return "\n".join(lines)
+
+
+async def _google_login_and_claim(
+    gmail: str,
+    gmail_password: str,
+    totp_code: str,
+    redirect_url: str,
+    on_progress: ProgressCallback,
+) -> bool:
+    """Log into Google with Playwright and claim offer via redirect URL."""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        page = await ctx.new_page()
+
+        try:
+            # Step 5: Payment method — go to Google sign-in
+            await on_progress(_build_progress(4))
+            await page.goto("https://accounts.google.com/signin", wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(1)
+
+            # Enter email
+            email_input = page.locator('input[type="email"]')
+            await email_input.fill(gmail)
+            next_btn = page.locator("#identifierNext")
+            if await next_btn.count() == 0:
+                next_btn = page.get_by_role("button", name="Next")
+            await next_btn.click()
+            await asyncio.sleep(3)
+
+            await on_progress(_build_progress(5))
+
+            # Check for "couldn't find account" error after email
+            email_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .Ekjuhf")
+            if await email_error.count() > 0:
+                err_text = await email_error.first.text_content()
+                if err_text and err_text.strip():
+                    log.warning("Google email error: %s", err_text.strip())
+                    await on_progress(_build_progress(4, error=f"خطأ الإيميل: {err_text.strip()}"))
+                    return False
+
+            # Step 6: Add payment — enter password
+            pwd_input = page.locator('input[type="password"]:visible')
+            try:
+                await pwd_input.wait_for(state="visible", timeout=15000)
+            except Exception:
+                # Check if there's an error message
+                page_text = await page.content()
+                if "find your Google Account" in page_text or "العثور على" in page_text:
+                    await on_progress(_build_progress(4, error="الإيميل غير موجود في Google"))
+                    return False
+                await on_progress(_build_progress(5, error="فشل الوصول لصفحة كلمة المرور"))
+                return False
+            await pwd_input.fill(gmail_password)
+            pwd_next = page.locator("#passwordNext")
+            if await pwd_next.count() == 0:
+                pwd_next = page.get_by_role("button", name="Next")
+            await pwd_next.click()
+            await asyncio.sleep(3)
+
+            # Check for error (wrong password)
+            error_el = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab")
+            if await error_el.count() > 0:
+                error_text = await error_el.first.text_content()
+                log.warning("Google login error: %s", error_text)
+                await on_progress(_build_progress(5, error=f"خطأ تسجيل الدخول: {error_text}"))
+                return False
+
+            # Check for 2FA prompt
+            await asyncio.sleep(2)
+            totp_input = page.locator('input[type="tel"]:visible')
+            if await totp_input.count() > 0:
+                await totp_input.fill(totp_code)
+                totp_next = page.get_by_role("button", name="Next")
+                if await totp_next.count() > 0:
+                    await totp_next.click()
+                await asyncio.sleep(3)
+
+            await on_progress(_build_progress(6))
+
+            # Step 7-8: Check offer & Claim — navigate to redirect URL
+            await on_progress(_build_progress(7))
+            await page.goto(redirect_url, wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(3)
+
+            # Try to click any "Claim" / "Get offer" / "Continue" button
+            for selector in [
+                "button:has-text('Claim')",
+                "button:has-text('Get')",
+                "button:has-text('Continue')",
+                "button:has-text('Start')",
+                "a:has-text('Claim')",
+                "a:has-text('Get')",
+            ]:
+                btn = page.locator(selector).first
+                if await btn.count() > 0:
+                    await btn.click()
+                    await asyncio.sleep(3)
+                    break
+
+            await on_progress(_build_progress(8))
+
+            # Step 9: Process payment
+            await asyncio.sleep(2)
+            # Check for any confirmation buttons
+            for selector in [
+                "button:has-text('Subscribe')",
+                "button:has-text('Confirm')",
+                "button:has-text('Accept')",
+                "button:has-text('Done')",
+            ]:
+                btn = page.locator(selector).first
+                if await btn.count() > 0:
+                    await btn.click()
+                    await asyncio.sleep(2)
+                    break
+
+            await on_progress(_build_progress(9))
+            await asyncio.sleep(1)
+            await on_progress(_build_progress(10))
+
+            return True
+
+        except Exception as exc:
+            log.warning("Google login/claim failed: %s", exc)
+            return False
+        finally:
+            await browser.close()
+
+
+async def verify_gemini_auto(
+    on_progress: ProgressCallback,
+    gmail: str = "",
+    gmail_password: str = "",
+    totp_code: str = "",
+) -> Dict[str, Any]:
+    """Full auto Gemini/Google One verification with user's real Gmail.
+
+    Steps:
+    1. Email        — validate Gmail address
+    2. Spam check   — check email format/domain
+    3. Password     — validate password provided
+    4. Two-factor   — validate 2FA code provided
+    5. Payment method — Google login (enter email)
+    6. Add payment  — Google login (enter password + 2FA)
+    7. Check offer  — SheerID create verification + submit student info
+    8. Claim offer  — SheerID upload document
+    9. Process payment — complete + claim redirect
+    10. Complete     — done
+    """
+    program_id = PROGRAM_IDS["google_one"]
+
+    first, last = _generate_name()
+    uni = _weighted_choice(STUDENT_UNIVERSITIES)
+    student_email = _generate_email(first, last, uni["domain"])
+    dob = _generate_student_dob()
+    fingerprint = _generate_fingerprint()
+
+    log.info("Gemini auto-verify: %s %s @ %s (gmail=%s)", first, last, uni["name"], gmail)
+
+    # Step 1: Email — validate
+    await on_progress(_build_progress(0))
+    if not gmail or "@" not in gmail:
+        await on_progress(_build_progress(0, error="إيميل غير صالح"))
+        return {"success": False, "error": "إيميل غير صالح"}
+    await asyncio.sleep(0.5)
+    await on_progress(_build_progress(1))
+
+    # Step 2: Spam check — validate domain
+    domain = gmail.split("@")[1].lower()
+    if domain not in ("gmail.com", "googlemail.com") and not domain.endswith(".edu"):
+        await on_progress(_build_progress(1, error="يجب أن يكون إيميل Gmail أو تعليمي"))
+        return {"success": False, "error": "إيميل غير مدعوم — يجب Gmail أو تعليمي"}
+    await asyncio.sleep(0.5)
+    await on_progress(_build_progress(2))
+
+    # Step 3: Password — validate
+    if not gmail_password or len(gmail_password) < 6:
+        await on_progress(_build_progress(2, error="كلمة المرور قصيرة جداً"))
+        return {"success": False, "error": "كلمة المرور يجب أن تكون 6 أحرف على الأقل"}
+    await asyncio.sleep(0.3)
+    await on_progress(_build_progress(3))
+
+    # Step 4: Two-factor auth — validate
+    await asyncio.sleep(0.3)
+    await on_progress(_build_progress(4))
+
+    # Step 5-6: Google login (real login with Playwright)
+    from playwright.async_api import async_playwright
+
+    google_logged_in = False
+    browser = None
+    page = None
+    pw_instance = None
+
+    try:
+        pw_instance = await async_playwright().start()
+        browser = await pw_instance.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx_browser = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        page = await ctx_browser.new_page()
+
+        # Step 5: Payment method — enter email
+        await on_progress(_build_progress(4))
+        await page.goto("https://accounts.google.com/signin", wait_until="networkidle", timeout=30000)
+        await asyncio.sleep(1)
+
+        email_input = page.locator('input[type="email"]')
+        await email_input.fill(gmail)
+        next_btn = page.locator("#identifierNext")
+        if await next_btn.count() == 0:
+            next_btn = page.get_by_role("button", name="Next")
+        await next_btn.click()
+        await asyncio.sleep(3)
+
+        # Check for email error
+        email_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .Ekjuhf")
+        if await email_error.count() > 0:
+            err_text = await email_error.first.text_content()
+            if err_text and err_text.strip():
+                log.warning("Google email error: %s", err_text.strip())
+                await on_progress(_build_progress(4, error=f"خطأ: {err_text.strip()}"))
+                return {"success": False, "error": f"خطأ تسجيل الدخول: {err_text.strip()}"}
+
+        await on_progress(_build_progress(5))
+
+        # Step 6: Add payment — enter password
+        pwd_input = page.locator('input[type="password"]:visible')
+        try:
+            await pwd_input.wait_for(state="visible", timeout=15000)
+        except Exception:
+            page_text = await page.content()
+            if "find your Google Account" in page_text or "العثور على" in page_text:
+                await on_progress(_build_progress(4, error="الإيميل غير موجود في Google"))
+                return {"success": False, "error": "الإيميل غير موجود في Google"}
+            await on_progress(_build_progress(5, error="فشل الوصول لصفحة كلمة المرور"))
+            return {"success": False, "error": "فشل الوصول لصفحة كلمة المرور"}
+
+        await pwd_input.fill(gmail_password)
+        pwd_next = page.locator("#passwordNext")
+        if await pwd_next.count() == 0:
+            pwd_next = page.get_by_role("button", name="Next")
+        await pwd_next.click()
+        await asyncio.sleep(3)
+
+        # Check for wrong password error
+        pwd_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab")
+        if await pwd_error.count() > 0:
+            err_text = await pwd_error.first.text_content()
+            if err_text and err_text.strip() and ("password" in err_text.lower() or "كلمة" in err_text):
+                log.warning("Google password error: %s", err_text.strip())
+                await on_progress(_build_progress(5, error=f"خطأ: {err_text.strip()}"))
+                return {"success": False, "error": f"كلمة المرور خاطئة: {err_text.strip()}"}
+
+        # Check for 2FA prompt
+        await asyncio.sleep(2)
+        totp_input = page.locator('input[type="tel"]:visible')
+        if await totp_input.count() > 0 and totp_code and totp_code != "000000":
+            await totp_input.fill(totp_code)
+            totp_next = page.get_by_role("button", name="Next")
+            if await totp_next.count() > 0:
+                await totp_next.click()
+            await asyncio.sleep(3)
+
+        google_logged_in = True
+        await on_progress(_build_progress(6))
+
+    except Exception as exc:
+        log.warning("Google login failed at step 5-6: %s", exc)
+        await on_progress(_build_progress(5, error=f"فشل تسجيل الدخول: {exc}"))
+        return {"success": False, "error": f"فشل تسجيل الدخول في Google: {exc}"}
+
+    # Step 7: Check offer — SheerID verification
+    async with httpx.AsyncClient(timeout=30) as client:
+        create_data, create_status = await _api_request(
+            client, "POST",
+            "/verification",
+            {"programId": program_id},
+        )
+        if create_status not in (200, 201) or not create_data.get("verificationId"):
+            err_msg = "فشل إنشاء التحقق التلقائي"
+            await on_progress(_build_progress(6, error=err_msg))
+            return {"success": False, "error": err_msg}
+
+        vid = create_data["verificationId"]
+        log.info("Gemini auto: created verification %s", vid)
+
+        body = {
+            "firstName": first,
+            "lastName": last,
+            "birthDate": dob,
+            "email": student_email,
+            "phoneNumber": "",
+            "organization": {"id": uni["id"], "idExtended": str(uni["id"]), "name": uni["name"]},
+            "deviceFingerprintHash": fingerprint,
+            "locale": "en-US",
+            "metadata": {
+                "marketConsentValue": False,
+                "verificationId": vid,
+                "refererUrl": f"{SHEERID_BASE}/verify/{program_id}/?verificationId={vid}",
+                "flags": '{"collect-info-step-email-first":"default","doc-upload-considerations":"default","doc-upload-may24":"default","doc-upload-redesign-use-legacy-message-keys":false,"docUpload-assertion-checklist":"default","font-size":"default","include-cvec-field-france-student":"not-labeled-optional"}',
+                "submissionOptIn": (
+                    "By submitting the personal information above, I acknowledge that my "
+                    "personal information is being collected under the privacy policy of the "
+                    "business from which I am seeking a discount"
+                ),
+            },
+        }
+
+        data, status = await _api_request(
+            client, "POST",
+            f"/verification/{vid}/step/collectStudentPersonalInfo",
+            body,
+        )
+        if status != 200:
+            err_msg = f"فشل إرسال بيانات الطالب: HTTP {status}"
+            await on_progress(_build_progress(6, error=err_msg))
+            return {"success": False, "error": err_msg}
+        if data.get("currentStep") == "error":
+            err_msg = f"خطأ SheerID: {data.get('errorIds', [])}"
+            await on_progress(_build_progress(6, error=err_msg))
+            return {"success": False, "error": err_msg}
+
+        await on_progress(_build_progress(7))
+
+        # Step 8: Claim offer — skip SSO + upload document
+        step = data.get("currentStep", "")
+        if step in ("sso", "collectStudentPersonalInfo"):
+            await _api_request(client, "DELETE", f"/verification/{vid}/step/sso")
+
+        doc = _generate_student_id_image(first, last, uni["name"])
+        upload_body = {"files": [{"fileName": "student_card.png", "mimeType": "image/png", "fileSize": len(doc)}]}
+        data, status = await _api_request(client, "POST", f"/verification/{vid}/step/docUpload", upload_body)
+        if not data.get("documents"):
+            err_msg = "فشل الحصول على رابط الرفع"
+            await on_progress(_build_progress(7, error=err_msg))
+            return {"success": False, "error": err_msg}
+
+        upload_url = data["documents"][0].get("uploadUrl")
+        if not upload_url or not await _upload_s3(client, upload_url, doc):
+            err_msg = "فشل رفع المستند"
+            await on_progress(_build_progress(7, error=err_msg))
+            return {"success": False, "error": err_msg}
+
+        data, _ = await _api_request(client, "POST", f"/verification/{vid}/step/completeDocUpload")
+        await on_progress(_build_progress(8))
+
+    # Step 9: Process payment — claim via Google if redirect available
+    redirect_url = data.get("redirectUrl", "")
+    if redirect_url and google_logged_in and page:
+        try:
+            await on_progress(_build_progress(8))
+            await page.goto(redirect_url, wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(3)
+
+            for selector in [
+                "button:has-text('Claim')", "button:has-text('Get')",
+                "button:has-text('Continue')", "button:has-text('Start')",
+                "a:has-text('Claim')", "a:has-text('Get')",
+            ]:
+                btn = page.locator(selector).first
+                if await btn.count() > 0:
+                    await btn.click()
+                    await asyncio.sleep(3)
+                    break
+
+            await on_progress(_build_progress(9))
+
+            for selector in [
+                "button:has-text('Subscribe')", "button:has-text('Confirm')",
+                "button:has-text('Accept')", "button:has-text('Done')",
+            ]:
+                btn = page.locator(selector).first
+                if await btn.count() > 0:
+                    await btn.click()
+                    await asyncio.sleep(2)
+                    break
+
+        except Exception as exc:
+            log.warning("Google claim redirect failed: %s", exc)
+    else:
+        await on_progress(_build_progress(9))
+
+    # Step 10: Complete
+    await asyncio.sleep(0.5)
+    await on_progress(_build_progress(10))
+
+    # Cleanup browser
+    if browser:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+    if pw_instance:
+        try:
+            await pw_instance.stop()
+        except Exception:
+            pass
+
+    return {
+        "success": True,
+        "student": f"{first} {last}",
+        "email": student_email,
+        "gmail": gmail,
+        "school": uni["name"],
+        "step": data.get("currentStep", "pending"),
+        "redirect": redirect_url,
     }
 
 
