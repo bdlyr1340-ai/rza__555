@@ -1,6 +1,6 @@
 """
-YouTube Student Verification Tool
-SheerID Student Verification for YouTube Premium
+Google One (Gemini) Student Verification Tool
+SheerID Student Verification for Google One AI Premium
 
 Enhanced with:
 - Success rate tracking per organization
@@ -89,129 +89,70 @@ stats = Stats()
 
 
 # ============ UNIVERSITIES WITH WEIGHTS ============
-# YouTube Premium Student Discount supports 100+ countries globally including:
-# USA, UK, Canada, Australia, India, Vietnam, Japan, South Korea, Germany,
-# France, Brazil, Indonesia, Philippines, Thailand, Malaysia, Singapore,
-# Turkey, Mexico, Egypt, Saudi Arabia, UAE, South Africa, and many more.
-# Vietnam and India are FULLY SUPPORTED - use local universities!
+# NOTE: As of Jan 2026, new Gemini student sign-ups are US-ONLY
+# Other countries may work for existing users but new sign-ups restricted
 
 UNIVERSITIES = [
-    # =========== VIETNAM - FULLY SUPPORTED (15 schools) ===========
-    {"id": 588731, "name": "Hanoi University of Science and Technology", "domain": "hust.edu.vn", "weight": 98},
-    {"id": 10066238, "name": "VNU University of Engineering and Technology", "domain": "uet.vnu.edu.vn", "weight": 96},
-    {"id": 588738, "name": "VNU University of Information Technology", "domain": "uit.edu.vn", "weight": 94},
-    {"id": 588772, "name": "FPT University", "domain": "fpt.edu.vn", "weight": 97},
-    {"id": 588608, "name": "Posts and Telecommunications Institute of Technology", "domain": "ptit.edu.vn", "weight": 92},
-    {"id": 10492794, "name": "VNU University of Science", "domain": "hus.vnu.edu.vn", "weight": 90},
-    {"id": 10066240, "name": "Vietnam National University Ho Chi Minh City", "domain": "vnuhcm.edu.vn", "weight": 95},
-    {"id": 588736, "name": "Ho Chi Minh City University of Technology", "domain": "hcmut.edu.vn", "weight": 93},
-    {"id": 588740, "name": "Ton Duc Thang University", "domain": "tdtu.edu.vn", "weight": 91},
-    {"id": 588597, "name": "Duy Tan University", "domain": "duytan.edu.vn", "weight": 89},
-    {"id": 588599, "name": "University of Economics Ho Chi Minh City", "domain": "ueh.edu.vn", "weight": 88},
-    {"id": 588601, "name": "Hue University", "domain": "hueuni.edu.vn", "weight": 85},
-    {"id": 588603, "name": "University of Da Nang", "domain": "udn.vn", "weight": 84},
-    {"id": 588605, "name": "Can Tho University", "domain": "ctu.edu.vn", "weight": 83},
-    {"id": 588607, "name": "Foreign Trade University", "domain": "ftu.edu.vn", "weight": 90},
-    
-    # =========== INDIA - FULLY SUPPORTED (15 schools) ===========
-    {"id": 10007277, "name": "Indian Institute of Technology Delhi", "domain": "iitd.ac.in", "weight": 95},
-    {"id": 10007303, "name": "Indian Institute of Technology Bombay", "domain": "iitb.ac.in", "weight": 94},
-    {"id": 10007289, "name": "Indian Institute of Technology Madras", "domain": "iitm.ac.in", "weight": 93},
-    {"id": 10007295, "name": "Indian Institute of Technology Kanpur", "domain": "iitk.ac.in", "weight": 92},
-    {"id": 10007281, "name": "Indian Institute of Technology Kharagpur", "domain": "iitkgp.ac.in", "weight": 91},
-    {"id": 3819983, "name": "University of Mumbai", "domain": "mu.ac.in", "weight": 90},
-    {"id": 3827577, "name": "University of Delhi", "domain": "du.ac.in", "weight": 92},
-    {"id": 10007271, "name": "Indian Institute of Science Bangalore", "domain": "iisc.ac.in", "weight": 96},
-    {"id": 3827579, "name": "Jawaharlal Nehru University", "domain": "jnu.ac.in", "weight": 88},
-    {"id": 3827581, "name": "Banaras Hindu University", "domain": "bhu.ac.in", "weight": 86},
-    {"id": 3827583, "name": "Aligarh Muslim University", "domain": "amu.ac.in", "weight": 85},
-    {"id": 10007309, "name": "BITS Pilani", "domain": "bits-pilani.ac.in", "weight": 90},
-    {"id": 3827585, "name": "University of Hyderabad", "domain": "uohyd.ac.in", "weight": 84},
-    {"id": 10007315, "name": "Vellore Institute of Technology", "domain": "vit.ac.in", "weight": 88},
-    {"id": 10007317, "name": "Manipal Academy of Higher Education", "domain": "manipal.edu", "weight": 87},
-    
-    # =========== INDONESIA - FULLY SUPPORTED (10 schools) ===========
-    {"id": 10008577, "name": "University of Indonesia", "domain": "ui.ac.id", "weight": 90},
-    {"id": 10008584, "name": "Institut Teknologi Bandung", "domain": "itb.ac.id", "weight": 88},
-    {"id": 10008579, "name": "Gadjah Mada University", "domain": "ugm.ac.id", "weight": 87},
-    {"id": 10008581, "name": "Airlangga University", "domain": "unair.ac.id", "weight": 85},
-    {"id": 10008583, "name": "IPB University", "domain": "ipb.ac.id", "weight": 84},
-    {"id": 10008585, "name": "Brawijaya University", "domain": "ub.ac.id", "weight": 83},
-    {"id": 10008587, "name": "Diponegoro University", "domain": "undip.ac.id", "weight": 82},
-    {"id": 10008589, "name": "Institut Teknologi Sepuluh Nopember", "domain": "its.ac.id", "weight": 86},
-    {"id": 10008591, "name": "Bina Nusantara University", "domain": "binus.ac.id", "weight": 85},
-    {"id": 10008593, "name": "Telkom University", "domain": "telkomuniversity.ac.id", "weight": 84},
-    
-    # =========== THAILAND - FULLY SUPPORTED (8 schools) ===========
-    {"id": 10015929, "name": "Chulalongkorn University", "domain": "chula.ac.th", "weight": 88},
-    {"id": 10015931, "name": "Mahidol University", "domain": "mahidol.ac.th", "weight": 87},
-    {"id": 10015933, "name": "Chiang Mai University", "domain": "cmu.ac.th", "weight": 85},
-    {"id": 10015935, "name": "Kasetsart University", "domain": "ku.ac.th", "weight": 84},
-    {"id": 10015937, "name": "Thammasat University", "domain": "tu.ac.th", "weight": 86},
-    {"id": 10015939, "name": "Prince of Songkla University", "domain": "psu.ac.th", "weight": 82},
-    {"id": 10015941, "name": "Khon Kaen University", "domain": "kku.ac.th", "weight": 81},
-    {"id": 10015943, "name": "King Mongkut's University of Technology Thonburi", "domain": "kmutt.ac.th", "weight": 85},
-    
-    # =========== PHILIPPINES - FULLY SUPPORTED (8 schools) ===========
-    {"id": 10019175, "name": "University of the Philippines Diliman", "domain": "upd.edu.ph", "weight": 88},
-    {"id": 10019177, "name": "Ateneo de Manila University", "domain": "ateneo.edu", "weight": 86},
-    {"id": 10019179, "name": "De La Salle University", "domain": "dlsu.edu.ph", "weight": 85},
-    {"id": 10019181, "name": "University of Santo Tomas", "domain": "ust.edu.ph", "weight": 84},
-    {"id": 10019183, "name": "Polytechnic University of the Philippines", "domain": "pup.edu.ph", "weight": 83},
-    {"id": 10019185, "name": "Mapua University", "domain": "mapua.edu.ph", "weight": 82},
-    {"id": 10019187, "name": "University of San Carlos", "domain": "usc.edu.ph", "weight": 80},
-    {"id": 10019189, "name": "Silliman University", "domain": "su.edu.ph", "weight": 79},
-    
-    # =========== USA - HIGH PRIORITY (10 schools) ===========
+    # =========== USA - HIGH PRIORITY ===========
+    # These have highest success rates for new sign-ups
     {"id": 2565, "name": "Pennsylvania State University-Main Campus", "domain": "psu.edu", "weight": 100},
     {"id": 3499, "name": "University of California, Los Angeles", "domain": "ucla.edu", "weight": 98},
     {"id": 3491, "name": "University of California, Berkeley", "domain": "berkeley.edu", "weight": 97},
+    {"id": 1953, "name": "Massachusetts Institute of Technology", "domain": "mit.edu", "weight": 95},
+    {"id": 3113, "name": "Stanford University", "domain": "stanford.edu", "weight": 95},
     {"id": 2285, "name": "New York University", "domain": "nyu.edu", "weight": 96},
+    {"id": 1426, "name": "Harvard University", "domain": "harvard.edu", "weight": 92},
+    {"id": 590759, "name": "Yale University", "domain": "yale.edu", "weight": 90},
+    {"id": 2626, "name": "Princeton University", "domain": "princeton.edu", "weight": 90},
+    {"id": 698, "name": "Columbia University", "domain": "columbia.edu", "weight": 92},
+    {"id": 3508, "name": "University of Chicago", "domain": "uchicago.edu", "weight": 88},
+    {"id": 943, "name": "Duke University", "domain": "duke.edu", "weight": 88},
+    {"id": 751, "name": "Cornell University", "domain": "cornell.edu", "weight": 90},
+    {"id": 2420, "name": "Northwestern University", "domain": "northwestern.edu", "weight": 88},
+    # More US Universities
     {"id": 3568, "name": "University of Michigan", "domain": "umich.edu", "weight": 95},
-    {"id": 378, "name": "Arizona State University", "domain": "asu.edu", "weight": 94},
-    {"id": 3521, "name": "University of Florida", "domain": "ufl.edu", "weight": 93},
-    {"id": 3686, "name": "University of Texas at Austin", "domain": "utexas.edu", "weight": 92},
-    {"id": 1217, "name": "Georgia Institute of Technology", "domain": "gatech.edu", "weight": 91},
-    {"id": 602, "name": "Carnegie Mellon University", "domain": "cmu.edu", "weight": 90},
+    {"id": 3686, "name": "University of Texas at Austin", "domain": "utexas.edu", "weight": 94},
+    {"id": 1217, "name": "Georgia Institute of Technology", "domain": "gatech.edu", "weight": 93},
+    {"id": 602, "name": "Carnegie Mellon University", "domain": "cmu.edu", "weight": 92},
+    {"id": 3477, "name": "University of California, San Diego", "domain": "ucsd.edu", "weight": 93},
+    {"id": 3600, "name": "University of North Carolina at Chapel Hill", "domain": "unc.edu", "weight": 90},
+    {"id": 3645, "name": "University of Southern California", "domain": "usc.edu", "weight": 91},
+    {"id": 3629, "name": "University of Pennsylvania", "domain": "upenn.edu", "weight": 90},
+    {"id": 1603, "name": "Indiana University Bloomington", "domain": "iu.edu", "weight": 88},
+    {"id": 2506, "name": "Ohio State University", "domain": "osu.edu", "weight": 90},
+    {"id": 2700, "name": "Purdue University", "domain": "purdue.edu", "weight": 89},
+    {"id": 3761, "name": "University of Washington", "domain": "uw.edu", "weight": 90},
+    {"id": 3770, "name": "University of Wisconsin-Madison", "domain": "wisc.edu", "weight": 88},
+    {"id": 3562, "name": "University of Maryland", "domain": "umd.edu", "weight": 87},
+    {"id": 519, "name": "Boston University", "domain": "bu.edu", "weight": 86},
+    {"id": 378, "name": "Arizona State University", "domain": "asu.edu", "weight": 92},
+    {"id": 3521, "name": "University of Florida", "domain": "ufl.edu", "weight": 90},
+    {"id": 3535, "name": "University of Illinois at Urbana-Champaign", "domain": "illinois.edu", "weight": 91},
+    {"id": 3557, "name": "University of Minnesota Twin Cities", "domain": "umn.edu", "weight": 88},
+    {"id": 3483, "name": "University of California, Davis", "domain": "ucdavis.edu", "weight": 89},
+    {"id": 3487, "name": "University of California, Irvine", "domain": "uci.edu", "weight": 88},
+    {"id": 3502, "name": "University of California, Santa Barbara", "domain": "ucsb.edu", "weight": 87},
+    # Community Colleges (may have higher success)
+    {"id": 2874, "name": "Santa Monica College", "domain": "smc.edu", "weight": 85},
+    {"id": 2350, "name": "Northern Virginia Community College", "domain": "nvcc.edu", "weight": 84},
     
-    # =========== JAPAN - SUPPORTED (5 schools) ===========
-    {"id": 354085, "name": "The University of Tokyo", "domain": "u-tokyo.ac.jp", "weight": 85},
-    {"id": 353961, "name": "Kyoto University", "domain": "kyoto-u.ac.jp", "weight": 84},
-    {"id": 353963, "name": "Osaka University", "domain": "osaka-u.ac.jp", "weight": 82},
-    {"id": 353965, "name": "Tohoku University", "domain": "tohoku.ac.jp", "weight": 81},
-    {"id": 353967, "name": "Nagoya University", "domain": "nagoya-u.ac.jp", "weight": 80},
-    
-    # =========== SOUTH KOREA - SUPPORTED (5 schools) ===========
-    {"id": 356569, "name": "Seoul National University", "domain": "snu.ac.kr", "weight": 85},
-    {"id": 356632, "name": "Yonsei University", "domain": "yonsei.ac.kr", "weight": 84},
-    {"id": 356431, "name": "Korea University", "domain": "korea.ac.kr", "weight": 83},
-    {"id": 356571, "name": "KAIST", "domain": "kaist.ac.kr", "weight": 86},
-    {"id": 356573, "name": "Pohang University of Science and Technology", "domain": "postech.ac.kr", "weight": 84},
-    
-    # =========== UK - SUPPORTED (5 schools) ===========
-    {"id": 273409, "name": "University of Oxford", "domain": "ox.ac.uk", "weight": 85},
-    {"id": 273378, "name": "University of Cambridge", "domain": "cam.ac.uk", "weight": 85},
-    {"id": 273294, "name": "Imperial College London", "domain": "imperial.ac.uk", "weight": 83},
-    {"id": 273319, "name": "University College London", "domain": "ucl.ac.uk", "weight": 82},
-    {"id": 273381, "name": "University of Edinburgh", "domain": "ed.ac.uk", "weight": 80},
-    
-    # =========== OTHER COUNTRIES ===========
-    # Australia
-    {"id": 345301, "name": "The University of Melbourne", "domain": "unimelb.edu.au", "weight": 82},
-    {"id": 345303, "name": "The University of Sydney", "domain": "sydney.edu.au", "weight": 80},
-    # Brazil
-    {"id": 10042652, "name": "University of Sao Paulo", "domain": "usp.br", "weight": 78},
-    {"id": 10059316, "name": "University of Campinas", "domain": "unicamp.br", "weight": 76},
-    # Germany
-    {"id": 10011178, "name": "Technical University of Munich", "domain": "tum.de", "weight": 80},
-    {"id": 344450, "name": "Ludwig Maximilian University of Munich", "domain": "lmu.de", "weight": 78},
-    # Singapore
-    {"id": 356355, "name": "National University of Singapore", "domain": "nus.edu.sg", "weight": 82},
-    {"id": 356356, "name": "Nanyang Technological University", "domain": "ntu.edu.sg", "weight": 80},
+    # =========== OTHER COUNTRIES (Lower priority - may not work for new sign-ups) ===========
     # Canada
-    {"id": 328355, "name": "University of Toronto", "domain": "utoronto.ca", "weight": 80},
-    {"id": 328315, "name": "University of British Columbia", "domain": "ubc.ca", "weight": 78},
+    {"id": 328355, "name": "University of Toronto", "domain": "utoronto.ca", "weight": 40},
+    {"id": 328315, "name": "University of British Columbia", "domain": "ubc.ca", "weight": 38},
+    # UK
+    {"id": 273409, "name": "University of Oxford", "domain": "ox.ac.uk", "weight": 35},
+    {"id": 273378, "name": "University of Cambridge", "domain": "cam.ac.uk", "weight": 35},
+    # India (likely blocked for new sign-ups)
+    {"id": 10007277, "name": "Indian Institute of Technology Delhi", "domain": "iitd.ac.in", "weight": 20},
+    {"id": 3819983, "name": "University of Mumbai", "domain": "mu.ac.in", "weight": 15},
+    # Australia
+    {"id": 345301, "name": "The University of Melbourne", "domain": "unimelb.edu.au", "weight": 30},
+    {"id": 345303, "name": "The University of Sydney", "domain": "sydney.edu.au", "weight": 28},
 ]
+
+
+
 
 
 
@@ -261,7 +202,30 @@ def random_delay():
 
 
 def generate_fingerprint() -> str:
-    components = [str(time.time()), str(random.random()), "1920x1080"]
+    """Generate realistic browser fingerprint to avoid fraud detection"""
+    # Realistic screen resolutions
+    resolutions = ["1920x1080", "1366x768", "1536x864", "1440x900", "1280x720", "2560x1440"]
+    # Common timezones
+    timezones = [-8, -7, -6, -5, -4, 0, 1, 2, 3, 5.5, 8, 9, 10]
+    # Common languages
+    languages = ["en-US", "en-GB", "en-CA", "en-AU", "es-ES", "fr-FR", "de-DE", "pt-BR"]
+    # Common platforms
+    platforms = ["Win32", "MacIntel", "Linux x86_64"]
+    # Browser vendors
+    vendors = ["Google Inc.", "Apple Computer, Inc.", ""]
+    
+    components = [
+        str(int(time.time() * 1000)),
+        str(random.random()),
+        random.choice(resolutions),
+        str(random.choice(timezones)),
+        random.choice(languages),
+        random.choice(platforms),
+        random.choice(vendors),
+        str(random.randint(1, 16)),  # hardware concurrency (CPU cores)
+        str(random.randint(2, 32)),  # device memory GB
+        str(random.randint(0, 1)),   # touch support
+    ]
     return hashlib.md5("|".join(components).encode()).hexdigest()
 
 
@@ -286,61 +250,149 @@ def generate_birth_date() -> str:
 
 
 # ============ DOCUMENT GENERATOR ============
-def generate_student_id(first: str, last: str, school: str) -> bytes:
-    """Generate fake student ID card"""
-    w, h = 650, 400
+# ============ DOCUMENT GENERATOR ============
+def generate_transcript(first: str, last: str, school: str, dob: str) -> bytes:
+    """Generate fake academic transcript (higher success rate)"""
+    w, h = 850, 1100
     img = Image.new("RGB", (w, h), (255, 255, 255))
     draw = ImageDraw.Draw(img)
     
     try:
-        font_lg = ImageFont.truetype("arial.ttf", 24)
+        font_header = ImageFont.truetype("arial.ttf", 32)
+        font_title = ImageFont.truetype("arial.ttf", 24)
+        font_text = ImageFont.truetype("arial.ttf", 16)
+        font_bold = ImageFont.truetype("arialbd.ttf", 16)
+    except:
+        font_header = font_title = font_text = font_bold = ImageFont.load_default()
+    
+    # 1. Header
+    draw.text((w//2, 50), school.upper(), fill=(0, 0, 0), font=font_header, anchor="mm")
+    draw.text((w//2, 90), "OFFICIAL ACADEMIC TRANSCRIPT", fill=(50, 50, 50), font=font_title, anchor="mm")
+    draw.line([(50, 110), (w-50, 110)], fill=(0, 0, 0), width=2)
+    
+    # 2. Student Info
+    y = 150
+    draw.text((50, y), f"Student Name: {first} {last}", fill=(0, 0, 0), font=font_bold)
+    draw.text((w-300, y), f"Student ID: {random.randint(10000000, 99999999)}", fill=(0, 0, 0), font=font_text)
+    y += 30
+    draw.text((50, y), f"Date of Birth: {dob}", fill=(0, 0, 0), font=font_text)
+    draw.text((w-300, y), f"Date Issued: {time.strftime('%Y-%m-%d')}", fill=(0, 0, 0), font=font_text)
+    y += 40
+    
+    # 3. Current Enrollment Status
+    draw.rectangle([(50, y), (w-50, y+40)], fill=(240, 240, 240))
+    draw.text((w//2, y+20), "CURRENT STATUS: ENROLLED (SPRING 2025)", fill=(0, 100, 0), font=font_bold, anchor="mm")
+    y += 70
+    
+    # 4. Courses
+    courses = [
+        ("CS 101", "Intro to Computer Science", "4.0", "A"),
+        ("MATH 201", "Calculus I", "3.0", "A-"),
+        ("ENG 102", "Academic Writing", "3.0", "B+"),
+        ("PHYS 150", "Physics for Engineers", "4.0", "A"),
+        ("HIST 110", "World History", "3.0", "A")
+    ]
+    
+    # Table Header
+    draw.text((50, y), "Course Code", font=font_bold, fill=(0,0,0))
+    draw.text((200, y), "Course Title", font=font_bold, fill=(0,0,0))
+    draw.text((600, y), "Credits", font=font_bold, fill=(0,0,0))
+    draw.text((700, y), "Grade", font=font_bold, fill=(0,0,0))
+    y += 20
+    draw.line([(50, y), (w-50, y)], fill=(0, 0, 0), width=1)
+    y += 20
+    
+    for code, title, cred, grade in courses:
+        draw.text((50, y), code, font=font_text, fill=(0,0,0))
+        draw.text((200, y), title, font=font_text, fill=(0,0,0))
+        draw.text((600, y), cred, font=font_text, fill=(0,0,0))
+        draw.text((700, y), grade, font=font_text, fill=(0,0,0))
+        y += 30
+    
+    y += 20
+    draw.line([(50, y), (w-50, y)], fill=(0, 0, 0), width=1)
+    y += 30
+    
+    # 5. Summary
+    draw.text((50, y), "Cumulative GPA: 3.85", font=font_bold, fill=(0,0,0))
+    draw.text((w-300, y), "Academic Standing: Good", font=font_bold, fill=(0,0,0))
+    
+    # 6. Watermark / Footer
+    draw.text((w//2, h-50), "This document is electronically generated and valid without signature.", fill=(100, 100, 100), font=font_text, anchor="mm")
+    
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+def generate_student_id(first: str, last: str, school: str) -> bytes:
+    """Generate fake student ID card (Improved)"""
+    w, h = 650, 400
+    # Randomize background color slightly
+    bg_color = (random.randint(240, 255), random.randint(240, 255), random.randint(240, 255))
+    img = Image.new("RGB", (w, h), bg_color)
+    draw = ImageDraw.Draw(img)
+    
+    try:
+        font_lg = ImageFont.truetype("arial.ttf", 26)
         font_md = ImageFont.truetype("arial.ttf", 18)
         font_sm = ImageFont.truetype("arial.ttf", 14)
+        font_bold = ImageFont.truetype("arialbd.ttf", 20)
     except:
-        font_lg = font_md = font_sm = ImageFont.load_default()
+        font_lg = font_md = font_sm = font_bold = ImageFont.load_default()
     
-    # Header
-    draw.rectangle([(0, 0), (w, 60)], fill=(0, 51, 102))
-    draw.text((w//2, 30), "STUDENT IDENTIFICATION CARD", fill=(255, 255, 255), font=font_lg, anchor="mm")
+    # Header color based on school name hash to be consistent but varied
+    header_color = (random.randint(0, 50), random.randint(0, 50), random.randint(50, 150))
     
-    # School
-    draw.text((w//2, 90), school[:50], fill=(0, 51, 102), font=font_md, anchor="mm")
+    draw.rectangle([(0, 0), (w, 80)], fill=header_color)
+    draw.text((w//2, 40), school.upper(), fill=(255, 255, 255), font=font_lg, anchor="mm")
     
     # Photo placeholder
-    draw.rectangle([(30, 120), (150, 280)], outline=(180, 180, 180), width=2)
-    draw.text((90, 200), "PHOTO", fill=(180, 180, 180), font=font_md, anchor="mm")
+    draw.rectangle([(30, 100), (160, 280)], outline=(100, 100, 100), width=2, fill=(220, 220, 220))
+    draw.text((95, 190), "PHOTO", fill=(150, 150, 150), font=font_md, anchor="mm")
     
     # Info
-    student_id = f"STU{random.randint(100000, 999999)}"
-    y = 130
-    for line in [f"Name: {first} {last}", f"ID: {student_id}", "Status: Full-time Student",
-                 "Major: Computer Science", f"Valid: {time.strftime('%Y')}-{int(time.strftime('%Y'))+1}"]:
-        draw.text((175, y), line, fill=(51, 51, 51), font=font_md)
-        y += 28
+    x_info = 190
+    y = 110
+    draw.text((x_info, y), f"{first} {last}", fill=(0, 0, 0), font=font_bold)
+    y += 40
+    draw.text((x_info, y), "Student ID:", fill=(100, 100, 100), font=font_sm)
+    draw.text((x_info + 80, y), str(random.randint(10000000, 99999999)), fill=(0, 0, 0), font=font_md)
+    y += 30
+    draw.text((x_info, y), "Role:", fill=(100, 100, 100), font=font_sm)
+    draw.text((x_info + 80, y), "Student", fill=(0, 0, 0), font=font_md)
+    y += 30
+    draw.text((x_info, y), "Valid Thru:", fill=(100, 100, 100), font=font_sm)
+    draw.text((x_info + 80, y), f"05/{int(time.strftime('%Y'))+1}", fill=(0, 0, 0), font=font_md)
     
-    # Footer
-    draw.rectangle([(0, h-40), (w, h)], fill=(0, 51, 102))
-    draw.text((w//2, h-20), "Property of University", fill=(255, 255, 255), font=font_sm, anchor="mm")
-    
-    # Barcode
-    for i in range(20):
-        x = 480 + i * 7
-        draw.rectangle([(x, 280), (x+3, 280+random.randint(30, 50))], fill=(0, 0, 0))
-    
+    # Barcode strip
+    draw.rectangle([(0, 320), (w, 380)], fill=(255, 255, 255))
+    for i in range(40):
+        x = 50 + i * 14
+        if random.random() > 0.3:
+            draw.rectangle([(x, 330), (x+8, 370)], fill=(0, 0, 0))
+            
     buf = BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
 # ============ VERIFIER ============
-class YouTubeVerifier:
-    """YouTube Student Verification with enhanced features"""
+class GeminiVerifier:
+    """Gemini Student Verification with enhanced features"""
     
-    def __init__(self, url: str):
+    def __init__(self, url: str, proxy: str = None):
         self.url = url
         self.vid = self._parse_id(url)
         self.fingerprint = generate_fingerprint()
-        self.client = httpx.Client(timeout=30)
+        
+        # Configure proxy if provided
+        proxies = None
+        if proxy:
+            if not proxy.startswith("http"):
+                proxy = f"http://{proxy}"
+            proxies = {"all://": proxy}
+        
+        self.client = httpx.Client(timeout=30, proxies=proxies)
         self.org = None
     
     def __del__(self):
@@ -378,7 +430,7 @@ class YouTubeVerifier:
             return {"valid": False, "error": f"HTTP {status}"}
         
         step = data.get("currentStep", "")
-        # Accept multiple valid steps - offers.sheerid.com URLs may start at docUpload
+        # Accept multiple valid steps - handle re-upload after rejection
         valid_steps = ["collectStudentPersonalInfo", "docUpload", "sso"]
         if step in valid_steps:
             return {"valid": True, "step": step}
@@ -412,8 +464,15 @@ class YouTubeVerifier:
             print(f"   📍 Starting step: {current_step}")
             
             # Step 1: Generate document
-            print("\n   ▶ Step 1/3: Generating student ID...")
-            doc = generate_student_id(first, last, self.org["name"])
+            doc_type = "transcript" if random.random() < 0.7 else "id_card"
+            if doc_type == "transcript":
+                print("\n   ▶ Step 1/3: Generating academic transcript...")
+                doc = generate_transcript(first, last, self.org["name"], dob)
+                filename = "transcript.png"
+            else:
+                print("\n   ▶ Step 1/3: Generating student ID...")
+                doc = generate_student_id(first, last, self.org["name"])
+                filename = "student_card.png"
             print(f"     📄 Size: {len(doc)/1024:.1f} KB")
             
             # Step 2: Submit info (skip if already past this step)
@@ -459,7 +518,7 @@ class YouTubeVerifier:
             
             # Step 4: Upload document
             print("   ▶ Step 4/5: Uploading document...")
-            upload_body = {"files": [{"fileName": "student_card.png", "mimeType": "image/png", "fileSize": len(doc)}]}
+            upload_body = {"files": [{"fileName": filename, "mimeType": "image/png", "fileSize": len(doc)}]}
             data, status = self._request("POST", f"/verification/{self.vid}/step/docUpload", upload_body)
             
             if not data.get("documents"):
@@ -497,16 +556,22 @@ class YouTubeVerifier:
 
 # ============ MAIN ============
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Google One (Gemini) Student Verification Tool")
+    parser.add_argument("url", nargs="?", help="Verification URL")
+    parser.add_argument("--proxy", help="Proxy server (host:port or http://user:pass@host:port)")
+    args = parser.parse_args()
+    
     print()
     print("╔" + "═" * 56 + "╗")
-    print("║" + " 🎬 YouTube Student Verification Tool".center(56) + "║")
+    print("║" + " 🤖 Google One (Gemini) Verification Tool".center(56) + "║")
     print("║" + " SheerID Student Discount".center(56) + "║")
     print("╚" + "═" * 56 + "╝")
     print()
     
     # Get URL
-    if len(sys.argv) > 1:
-        url = sys.argv[1]
+    if args.url:
+        url = args.url
     else:
         url = input("   Enter verification URL: ").strip()
     
@@ -514,9 +579,13 @@ def main():
         print("\n   ❌ Invalid URL. Must contain sheerid.com")
         return
     
+    # Show proxy info
+    if args.proxy:
+        print(f"   🔒 Using proxy: {args.proxy}")
+    
     print("\n   ⏳ Processing...")
     
-    verifier = YouTubeVerifier(url)
+    verifier = GeminiVerifier(url, proxy=args.proxy)
     
     # Check link first
     check = verifier.check_link()
