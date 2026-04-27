@@ -38,6 +38,7 @@ async def connect_db() -> None:
     global _pool
     if _pool is not None:
         return
+
     _pool = await asyncpg.create_pool(
         dsn=config.DATABASE_URL,
         min_size=1,
@@ -57,7 +58,7 @@ async def close_db() -> None:
 
 def get_pool() -> asyncpg.Pool:
     if _pool is None:
-        raise RuntimeError("Database is not connected")
+        raise RuntimeError('Database is not connected')
     return _pool
 
 
@@ -68,7 +69,7 @@ async def upsert_user(
     referred_by: Optional[int] = None,
 ) -> Dict[str, Any]:
     async with get_pool().acquire() as conn:
-        old = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
+        old = await conn.fetchrow('SELECT * FROM users WHERE user_id=$1', user_id)
         if old:
             row = await conn.fetchrow(
                 """
@@ -111,7 +112,7 @@ async def upsert_user(
             )
             if inserted:
                 await conn.execute(
-                    "UPDATE users SET credits = credits + $1 WHERE user_id=$2",
+                    'UPDATE users SET credits = credits + $1 WHERE user_id=$2',
                     config.REFERRAL_BONUS,
                     referred_by,
                 )
@@ -120,55 +121,55 @@ async def upsert_user(
 
 async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     async with get_pool().acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
+        row = await conn.fetchrow('SELECT * FROM users WHERE user_id=$1', user_id)
         return dict(row) if row else None
 
 
 async def touch_message(user_id: int) -> None:
     async with get_pool().acquire() as conn:
         await conn.execute(
-            "UPDATE users SET total_messages = total_messages + 1, last_seen_at=NOW() WHERE user_id=$1",
+            'UPDATE users SET total_messages = total_messages + 1, last_seen_at=NOW() WHERE user_id=$1',
             user_id,
         )
 
 
 async def set_language(user_id: int, language: str) -> None:
     async with get_pool().acquire() as conn:
-        await conn.execute("UPDATE users SET language=$1 WHERE user_id=$2", language, user_id)
+        await conn.execute('UPDATE users SET language=$1 WHERE user_id=$2', language, user_id)
 
 
 async def add_credits(user_id: int, amount: int) -> Optional[int]:
     async with get_pool().acquire() as conn:
         row = await conn.fetchrow(
-            "UPDATE users SET credits = credits + $1 WHERE user_id=$2 RETURNING credits",
+            'UPDATE users SET credits = credits + $1 WHERE user_id=$2 RETURNING credits',
             amount,
             user_id,
         )
-        return int(row["credits"]) if row else None
+        return int(row['credits']) if row else None
 
 
 async def set_banned(user_id: int, banned: bool) -> None:
     async with get_pool().acquire() as conn:
-        await conn.execute("UPDATE users SET is_banned=$1 WHERE user_id=$2", banned, user_id)
+        await conn.execute('UPDATE users SET is_banned=$1 WHERE user_id=$2', banned, user_id)
 
 
 async def stats() -> Dict[str, Any]:
     async with get_pool().acquire() as conn:
-        users = await conn.fetchval("SELECT COUNT(*) FROM users")
-        today = await conn.fetchval("SELECT COUNT(*) FROM users WHERE created_at::date = CURRENT_DATE")
-        banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned=TRUE")
-        refs = await conn.fetchval("SELECT COUNT(*) FROM referrals")
-        msgs = await conn.fetchval("SELECT COALESCE(SUM(total_messages), 0) FROM users")
+        users = await conn.fetchval('SELECT COUNT(*) FROM users')
+        today = await conn.fetchval('SELECT COUNT(*) FROM users WHERE created_at::date = CURRENT_DATE')
+        banned = await conn.fetchval('SELECT COUNT(*) FROM users WHERE is_banned=TRUE')
+        refs = await conn.fetchval('SELECT COUNT(*) FROM referrals')
+        msgs = await conn.fetchval('SELECT COALESCE(SUM(total_messages), 0) FROM users')
         return {
-            "users": int(users or 0),
-            "today": int(today or 0),
-            "banned": int(banned or 0),
-            "referrals": int(refs or 0),
-            "messages": int(msgs or 0),
+            'users': int(users or 0),
+            'today': int(today or 0),
+            'banned': int(banned or 0),
+            'referrals': int(refs or 0),
+            'messages': int(msgs or 0),
         }
 
 
 async def all_active_user_ids() -> List[int]:
     async with get_pool().acquire() as conn:
-        rows = await conn.fetch("SELECT user_id FROM users WHERE is_banned=FALSE")
-        return [int(row["user_id"]) for row in rows]
+        rows = await conn.fetch('SELECT user_id FROM users WHERE is_banned=FALSE')
+        return [int(row['user_id']) for row in rows]

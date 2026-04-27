@@ -1,17 +1,10 @@
 # RZA Telegram Bot - Railway Ready
 
-## Railway Variables
-
-Required:
+## Railway variables
 
 ```env
 BOT_TOKEN=
 DATABASE_URL=
-```
-
-Optional:
-
-```env
 ADMIN_IDS=
 DEFAULT_CREDITS=3
 REFERRAL_BONUS=5
@@ -24,22 +17,13 @@ LOG_LEVEL=INFO
 python main.py
 ```
 
-## Commands
+## Test
 
-- `/start`
-- `/help`
-- `/id`
-- `/account`
-- `/me`
-- `/ref`
+Send:
 
-Admin:
+```text
+/start
+/ping
+```
 
-- `/stats`
-- `/addcredits USER_ID AMOUNT`
-- `/ban USER_ID`
-- `/unban USER_ID`
-- `/broadcast message`
-
-Railway will build with the Dockerfile, so it will not run `node`.
-The database file is named `rza_database.py` to avoid conflicts with any folder named `db`.
+The bot deletes any old Telegram webhook before polling. This fixes the common issue where Railway is running but Telegram messages do not reach the bot.
