@@ -696,21 +696,20 @@ async def verify_veterans(url: str) -> Dict[str, Any]:
 ProgressCallback = Callable[[str], Awaitable[None]]
 
 GEMINI_STEPS = [
-    "Email",
-    "Spam check",
-    "Password",
-    "Two-factor auth",
-    "Payment method",
-    "Add payment",
-    "Check offer",
-    "Claim offer",
-    "Process payment",
-    "Complete",
+    "الإيميل",
+    "كلمة السر",
+    "المصادقة الثنائية",
+    "طريقة الدفع",
+    "إضافة طريقة دفع",
+    "التحقق من العرض",
+    "المطالبة بالعرض",
+    "معالجة الدفع",
+    "اكتمال",
 ]
 
 
-def _build_progress(current_idx: int, error: str = "") -> str:
-    """Build a progress string showing all 10 steps with status."""
+def _build_progress(current_idx: int, error: str = "", detail: str = "") -> str:
+    """Build a progress string showing all 9 steps with status."""
     lines: list[str] = []
     for i, step in enumerate(GEMINI_STEPS, 1):
         if i - 1 < current_idx:
@@ -721,6 +720,8 @@ def _build_progress(current_idx: int, error: str = "") -> str:
             lines.append(f"  ⏳  {i}. {step}")
         else:
             lines.append(f"  ⬜  {i}. {step}")
+    if detail:
+        lines.append(f"\nℹ️ {detail}")
     if error:
         lines.append(f"\n❌ {error}")
     return "\n".join(lines)
@@ -870,17 +871,16 @@ async def verify_gemini_auto(
 ) -> Dict[str, Any]:
     """Full auto Gemini/Google One verification with user's real Gmail.
 
-    Steps:
-    1. Email        — validate Gmail address
-    2. Spam check   — check email format/domain
-    3. Password     — validate password provided
-    4. Two-factor   — validate 2FA code provided
-    5. Payment method — Google login (enter email)
-    6. Add payment  — Google login (enter password + 2FA)
-    7. Check offer  — SheerID create verification + submit student info
-    8. Claim offer  — SheerID upload document
-    9. Process payment — complete + claim redirect
-    10. Complete     — done
+    Steps (9):
+    1. الإيميل         — Google login: enter email
+    2. كلمة السر       — Google login: enter password
+    3. المصادقة الثنائية — Google login: 2FA
+    4. طريقة الدفع      — SheerID create verification
+    5. إضافة طريقة دفع  — SheerID submit student info
+    6. التحقق من العرض   — SheerID upload document
+    7. المطالبة بالعرض   — claim offer via redirect
+    8. معالجة الدفع      — confirm subscription
+    9. اكتمال           — done
     """
     program_id = PROGRAM_IDS["google_one"]
 
@@ -892,37 +892,16 @@ async def verify_gemini_auto(
 
     log.info("Gemini auto-verify: %s %s @ %s (gmail=%s)", first, last, uni["name"], gmail)
 
-    # Step 1: Email — validate
-    await on_progress(_build_progress(0))
+    # Validate inputs before launching browser
     if not gmail or "@" not in gmail:
         await on_progress(_build_progress(0, error="إيميل غير صالح"))
         return {"success": False, "error": "إيميل غير صالح"}
-    await asyncio.sleep(0.5)
-    await on_progress(_build_progress(1))
-
-    # Step 2: Spam check — validate domain
-    domain = gmail.split("@")[1].lower()
-    if domain not in ("gmail.com", "googlemail.com") and not domain.endswith(".edu"):
-        await on_progress(_build_progress(1, error="يجب أن يكون إيميل Gmail أو تعليمي"))
-        return {"success": False, "error": "إيميل غير مدعوم — يجب Gmail أو تعليمي"}
-    await asyncio.sleep(0.5)
-    await on_progress(_build_progress(2))
-
-    # Step 3: Password — validate
     if not gmail_password or len(gmail_password) < 6:
-        await on_progress(_build_progress(2, error="كلمة المرور قصيرة جداً"))
+        await on_progress(_build_progress(1, error="كلمة المرور قصيرة جداً"))
         return {"success": False, "error": "كلمة المرور يجب أن تكون 6 أحرف على الأقل"}
-    await asyncio.sleep(0.3)
-    await on_progress(_build_progress(3))
 
-    # Step 4: Two-factor auth — validate
-    await asyncio.sleep(0.3)
-    await on_progress(_build_progress(4))
-
-    # Step 5-10: Google login + SheerID + claim (all wrapped in try/finally for cleanup)
     from playwright.async_api import async_playwright
 
-    google_logged_in = False
     browser = None
     page = None
     pw_instance = None
@@ -940,8 +919,8 @@ async def verify_gemini_auto(
         )
         page = await ctx_browser.new_page()
 
-        # Step 5: Payment method — enter email
-        await on_progress(_build_progress(4))
+        # ── Step 1: الإيميل — enter email in Google ──
+        await on_progress(_build_progress(0, detail=f"تسجيل الدخول بـ {gmail}..."))
         await page.goto("https://accounts.google.com/signin", wait_until="networkidle", timeout=30000)
         await asyncio.sleep(1)
 
@@ -959,23 +938,23 @@ async def verify_gemini_auto(
             err_text = await email_error.first.text_content()
             if err_text and err_text.strip():
                 log.warning("Google email error: %s", err_text.strip())
-                await on_progress(_build_progress(4, error=f"خطأ: {err_text.strip()}"))
-                result = {"success": False, "error": f"خطأ تسجيل الدخول: {err_text.strip()}"}
+                await on_progress(_build_progress(0, error=f"خطأ: {err_text.strip()}"))
+                result = {"success": False, "error": f"خطأ الإيميل: {err_text.strip()}"}
                 return result
 
-        await on_progress(_build_progress(5))
+        await on_progress(_build_progress(1, detail="تم قبول الإيميل، إدخال كلمة السر..."))
 
-        # Step 6: Add payment — enter password
+        # ── Step 2: كلمة السر — enter password ──
         pwd_input = page.locator('input[type="password"]:visible')
         try:
             await pwd_input.wait_for(state="visible", timeout=15000)
         except Exception:
             page_text = await page.content()
             if "find your Google Account" in page_text or "العثور على" in page_text:
-                await on_progress(_build_progress(4, error="الإيميل غير موجود في Google"))
+                await on_progress(_build_progress(0, error="الإيميل غير موجود في Google"))
                 result = {"success": False, "error": "الإيميل غير موجود في Google"}
                 return result
-            await on_progress(_build_progress(5, error="فشل الوصول لصفحة كلمة المرور"))
+            await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور"))
             result = {"success": False, "error": "فشل الوصول لصفحة كلمة المرور"}
             return result
 
@@ -992,11 +971,13 @@ async def verify_gemini_auto(
             err_text = await pwd_error.first.text_content()
             if err_text and err_text.strip() and ("password" in err_text.lower() or "كلمة" in err_text):
                 log.warning("Google password error: %s", err_text.strip())
-                await on_progress(_build_progress(5, error=f"خطأ: {err_text.strip()}"))
+                await on_progress(_build_progress(1, error=f"خطأ: {err_text.strip()}"))
                 result = {"success": False, "error": f"كلمة المرور خاطئة: {err_text.strip()}"}
                 return result
 
-        # Check for 2FA prompt
+        await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
+
+        # ── Step 3: المصادقة الثنائية — handle 2FA ──
         await asyncio.sleep(2)
         totp_input = page.locator('input[type="tel"]:visible')
         if await totp_input.count() > 0 and totp_code and totp_code != "000000":
@@ -1005,11 +986,14 @@ async def verify_gemini_auto(
             if await totp_next.count() > 0:
                 await totp_next.click()
             await asyncio.sleep(3)
+            await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
+        else:
+            await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح! (بدون 2FA)"))
 
-        google_logged_in = True
-        await on_progress(_build_progress(6))
+        log.info("Google login succeeded for %s", gmail)
 
-        # Step 7: Check offer — SheerID verification
+        # ── Step 4: طريقة الدفع — SheerID create verification ──
+        await on_progress(_build_progress(3, detail="جاري إنشاء التحقق..."))
         async with httpx.AsyncClient(timeout=30) as client:
             create_data, create_status = await _api_request(
                 client, "POST",
@@ -1018,13 +1002,15 @@ async def verify_gemini_auto(
             )
             if create_status not in (200, 201) or not create_data.get("verificationId"):
                 err_msg = "فشل إنشاء التحقق التلقائي"
-                await on_progress(_build_progress(6, error=err_msg))
+                await on_progress(_build_progress(3, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
 
             vid = create_data["verificationId"]
             log.info("Gemini auto: created verification %s", vid)
+            await on_progress(_build_progress(4, detail="تم إنشاء التحقق، إرسال البيانات..."))
 
+            # ── Step 5: إضافة طريقة دفع — submit student info ──
             body = {
                 "firstName": first,
                 "lastName": last,
@@ -1054,18 +1040,18 @@ async def verify_gemini_auto(
             )
             if status != 200:
                 err_msg = f"فشل إرسال بيانات الطالب: HTTP {status}"
-                await on_progress(_build_progress(6, error=err_msg))
+                await on_progress(_build_progress(4, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
             if data.get("currentStep") == "error":
                 err_msg = f"خطأ SheerID: {data.get('errorIds', [])}"
-                await on_progress(_build_progress(6, error=err_msg))
+                await on_progress(_build_progress(4, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
 
-            await on_progress(_build_progress(7))
+            await on_progress(_build_progress(5, detail="تم إرسال البيانات، رفع المستندات..."))
 
-            # Step 8: Claim offer — skip SSO + upload document
+            # ── Step 6: التحقق من العرض — skip SSO + upload document ──
             step = data.get("currentStep", "")
             if step in ("sso", "collectStudentPersonalInfo"):
                 await _api_request(client, "DELETE", f"/verification/{vid}/step/sso")
@@ -1075,25 +1061,24 @@ async def verify_gemini_auto(
             data, status = await _api_request(client, "POST", f"/verification/{vid}/step/docUpload", upload_body)
             if not data.get("documents"):
                 err_msg = "فشل الحصول على رابط الرفع"
-                await on_progress(_build_progress(7, error=err_msg))
+                await on_progress(_build_progress(5, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
 
             upload_url = data["documents"][0].get("uploadUrl")
             if not upload_url or not await _upload_s3(client, upload_url, doc):
                 err_msg = "فشل رفع المستند"
-                await on_progress(_build_progress(7, error=err_msg))
+                await on_progress(_build_progress(5, error=err_msg))
                 result = {"success": False, "error": err_msg}
                 return result
 
             data, _ = await _api_request(client, "POST", f"/verification/{vid}/step/completeDocUpload")
-            await on_progress(_build_progress(8))
+            await on_progress(_build_progress(6, detail="تم رفع المستندات، المطالبة بالعرض..."))
 
-        # Step 9: Process payment — claim via Google if redirect available
+        # ── Step 7: المطالبة بالعرض — claim via redirect ──
         redirect_url = data.get("redirectUrl", "")
-        if redirect_url and google_logged_in and page:
+        if redirect_url and page:
             try:
-                await on_progress(_build_progress(8))
                 await page.goto(redirect_url, wait_until="networkidle", timeout=30000)
                 await asyncio.sleep(3)
 
@@ -1108,8 +1093,9 @@ async def verify_gemini_auto(
                         await asyncio.sleep(3)
                         break
 
-                await on_progress(_build_progress(9))
+                await on_progress(_build_progress(7, detail="تم المطالبة، معالجة الدفع..."))
 
+                # ── Step 8: معالجة الدفع — confirm subscription ──
                 for selector in [
                     "button:has-text('Subscribe')", "button:has-text('Confirm')",
                     "button:has-text('Accept')", "button:has-text('Done')",
@@ -1123,11 +1109,13 @@ async def verify_gemini_auto(
             except Exception as exc:
                 log.warning("Google claim redirect failed: %s", exc)
         else:
-            await on_progress(_build_progress(9))
+            await on_progress(_build_progress(7))
 
-        # Step 10: Complete
+        await on_progress(_build_progress(8))
+
+        # ── Step 9: اكتمال ──
         await asyncio.sleep(0.5)
-        await on_progress(_build_progress(10))
+        await on_progress(_build_progress(9))
 
         result = {
             "success": True,
@@ -1142,7 +1130,7 @@ async def verify_gemini_auto(
 
     except Exception as exc:
         log.warning("Gemini auto-verify failed: %s", exc)
-        await on_progress(_build_progress(5, error=f"فشل تسجيل الدخول: {exc}"))
+        await on_progress(_build_progress(0, error=f"فشل: {exc}"))
         result = {"success": False, "error": f"فشل: {exc}"}
         return result
 

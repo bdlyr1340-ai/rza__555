@@ -58,14 +58,12 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
     if result.get("success"):
         await models.log_verification_finish(ver_id, user.id, success=True)
         reply = (
-            "🎉 *تم التحقق بنجاح!*\n\n"
-            f"الخدمة: {meta['label']}\n"
-            f"الشخص: `{result.get('student', '—')}`\n"
-            f"الإيميل: `{result.get('email', '—')}`\n"
-            f"Gmail: `{result.get('gmail', '—')}`\n"
-            f"الجامعة: {result.get('school', '—')}\n"
+            "🎉 *تهانياً تم تفعيل جيمناي برو سنوي!*\n\n"
+            f"📧 Gmail: `{result.get('gmail', '—')}`\n"
+            f"👤 الشخص: `{result.get('student', '—')}`\n"
+            f"🎓 الجامعة: {result.get('school', '—')}\n"
+            f"📩 إيميل التحقق: `{result.get('email', '—')}`\n"
             f"\nالحالة: {result.get('step', 'pending')}\n"
-            "\n⏳ انتظر 24-48 ساعة للمراجعة."
         )
         await progress_msg.edit_text(reply, parse_mode="Markdown", reply_markup=main_menu())
     else:
