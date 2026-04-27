@@ -1,4 +1,4 @@
-"""Inline keyboards."""
+"""لوحات الأزرار التفاعلية."""
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.services import SERVICE_REGISTRY
@@ -14,13 +14,16 @@ def main_menu() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
+
     rows.append([
         InlineKeyboardButton("👤 حسابي", callback_data="me"),
-        InlineKeyboardButton("🎁 دعوة أصدقاء", callback_data="ref"),
+        InlineKeyboardButton("🎁 رابط الدعوة", callback_data="ref"),
     ])
-    rows.append([InlineKeyboardButton("ℹ️ مساعدة", callback_data="help")])
+    rows.append([InlineKeyboardButton("ℹ️ المساعدة", callback_data="help")])
     return InlineKeyboardMarkup(rows)
 
 
 def back_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع للقائمة", callback_data="back")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ رجوع للقائمة", callback_data="back")]
+    ])
