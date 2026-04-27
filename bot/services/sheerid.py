@@ -1028,31 +1028,114 @@ async def verify_gemini_auto(
                 result = {"success": False, "error": f"كلمة المرور خاطئة: {err_text.strip()}"}
                 return result
 
-        # Check if we're on a security challenge page after password
+        # Check page after password entry
         cur_url = page.url
-        if "challenge" in cur_url.lower() or "signin/rejected" in cur_url.lower():
+        if "signin/rejected" in cur_url.lower():
             title = await page.title()
-            log.warning("Google security challenge after password: URL=%s", cur_url)
-            await on_progress(_build_progress(1, error=f"Google يطلب تحقق أمني: {title}"))
-            result = {"success": False, "error": f"Google رفض تسجيل الدخول — تحقق أمني: {title}"}
+            log.warning("Google rejected sign-in: URL=%s", cur_url)
+            await on_progress(_build_progress(1, error=f"Google رفض تسجيل الدخول: {title}"))
+            result = {"success": False, "error": f"Google رفض تسجيل الدخول: {title}"}
             return result
 
         await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
 
         # ── Step 3: المصادقة الثنائية — handle 2FA ──
         await asyncio.sleep(2)
-        totp_input = page.locator('input[type="tel"]:visible')
-        if await totp_input.count() > 0 and totp_code and totp_code != "000000":
-            await totp_input.fill(totp_code)
-            totp_next = page.get_by_role("button", name="Next")
-            if await totp_next.count() > 0:
-                await totp_next.click()
-            await asyncio.sleep(3)
-            await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
-        elif await totp_input.count() > 0 and (not totp_code or totp_code == "000000"):
-            await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل الرمز"))
-            result = {"success": False, "error": "الحساب يتطلب رمز المصادقة الثنائية (2FA)"}
-            return result
+
+        # Google 2FA comes in many forms; try to detect and handle each
+        is_2fa_page = "challenge" in page.url.lower()
+
+        # Look for TOTP / code input (multiple selectors for different Google UIs)
+        totp_input = page.locator(
+            'input[type="tel"]:visible, '
+            'input[id="totpPin"]:visible, '
+            'input[name="totpPin"]:visible, '
+            'input[aria-label*="code"i]:visible, '
+            'input[aria-label*="رمز"]:visible'
+        )
+
+        if await totp_input.count() > 0:
+            if totp_code and totp_code != "000000":
+                await totp_input.first.fill(totp_code)
+                # Find and click Next button
+                totp_next = page.locator("#totpNext")
+                if await totp_next.count() == 0:
+                    totp_next = page.get_by_role("button", name="Next")
+                if await totp_next.count() > 0:
+                    await totp_next.click()
+                await asyncio.sleep(4)
+
+                # Check for 2FA error
+                totp_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
+                if await totp_error.count() > 0:
+                    err_text = await totp_error.first.text_content()
+                    if err_text and err_text.strip():
+                        log.warning("Google 2FA error: %s", err_text.strip())
+                        await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
+                        result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
+                        return result
+
+                await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
+            else:
+                await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل الرمز"))
+                result = {"success": False, "error": "الحساب يتطلب رمز المصادقة الثنائية (2FA)"}
+                return result
+        elif is_2fa_page:
+            # 2FA page but no TOTP input — might be phone prompt, security key, etc.
+            title = await page.title()
+            page_text = await page.inner_text("body")
+            log.warning("Google 2FA page without TOTP input. URL=%s title=%s body=%s", page.url, title, page_text[:300])
+
+            # Check if Google is asking for phone/notification-based 2FA
+            if "phone" in page_text.lower() or "هاتف" in page_text or "tap" in page_text.lower():
+                await on_progress(_build_progress(2, error="Google يطلب تأكيد من الهاتف — غير مدعوم حالياً"))
+                result = {"success": False, "error": "Google يطلب تأكيد من الهاتف (إشعار) — يجب تفعيل TOTP بدلاً منه"}
+                return result
+
+            # Try clicking "Try another way" to find TOTP option
+            try_another = page.locator("button:has-text('Try another way'), button:has-text('طريقة أخرى'), a:has-text('Try another way')")
+            if await try_another.count() > 0:
+                await try_another.first.click()
+                await asyncio.sleep(3)
+
+                # Look for "Google Authenticator" or "Authenticator app" option
+                auth_option = page.locator(
+                    "li:has-text('Authenticator'), "
+                    "li:has-text('Google Authenticator'), "
+                    "div[role='link']:has-text('Authenticator'), "
+                    "div[data-challengetype='6']"
+                )
+                if await auth_option.count() > 0:
+                    await auth_option.first.click()
+                    await asyncio.sleep(3)
+
+                    # Now look for TOTP input again
+                    totp_input2 = page.locator('input[type="tel"]:visible, input[id="totpPin"]:visible')
+                    if await totp_input2.count() > 0 and totp_code and totp_code != "000000":
+                        await totp_input2.first.fill(totp_code)
+                        totp_next2 = page.locator("#totpNext")
+                        if await totp_next2.count() == 0:
+                            totp_next2 = page.get_by_role("button", name="Next")
+                        if await totp_next2.count() > 0:
+                            await totp_next2.click()
+                        await asyncio.sleep(4)
+                        await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
+                    elif totp_code and totp_code != "000000":
+                        await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
+                        result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
+                        return result
+                    else:
+                        await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل الرمز"))
+                        result = {"success": False, "error": "الحساب يتطلب رمز المصادقة الثنائية (2FA)"}
+                        return result
+                else:
+                    await on_progress(_build_progress(2, error="نوع التحقق غير مدعوم — يجب تفعيل Google Authenticator"))
+                    result = {"success": False, "error": "نوع التحقق الثنائي غير مدعوم — فعّل Google Authenticator"}
+                    return result
+            else:
+                await on_progress(_build_progress(2, error=f"تحقق أمني غير مدعوم: {title}"))
+                result = {"success": False, "error": f"تحقق أمني غير مدعوم: {title}"}
+                return result
         else:
             await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح! (بدون 2FA)"))
 
