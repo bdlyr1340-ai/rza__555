@@ -29,9 +29,10 @@ async def init_pool() -> asyncpg.Pool:
     sql = (Path(__file__).parent / "migrations.sql").read_text(encoding="utf-8")
     async with _pool.acquire() as conn:
         for statement in sql.split(";"):
-            statement = statement.strip()
-            if statement and not statement.startswith("--"):
-                await conn.execute(statement)
+            lines = [l for l in statement.splitlines() if not l.strip().startswith("--")]
+            cleaned = "\n".join(lines).strip()
+            if cleaned:
+                await conn.execute(cleaned)
     log.info("Database is ready.")
     return _pool
 
