@@ -1,2 +1,2 @@
-This folder is intentionally left without third-party verification automation scripts.
-The Telegram bot structure is restored and fixed for Railway.
+هذا المجلد موجود حتى يبقى هيكل المشروع القديم بدون كسر الاستيرادات.
+تشغيل سكربتات تحقق آلية عبر خدمات طرف ثالث غير مفعّل داخل هذه النسخة.
