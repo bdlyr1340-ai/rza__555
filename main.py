@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
-import signal
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -11,7 +11,7 @@ import asyncpg
 from aiohttp import web
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import Conflict, InvalidToken, TelegramError
+from telegram.error import BadRequest, Conflict, InvalidToken, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -23,7 +23,8 @@ from telegram.ext import (
 
 # ==========================================================
 # RZA Telegram Bot - Railway Ready
-# ملف واحد حتى ما تصير تعارضات بين db.py / package / imports
+# Single Python file. No db.py / package imports, no file conflicts.
+# Fixes: old DATABASE tables conflict, webhook conflict, and /start temporary error.
 # ==========================================================
 
 
@@ -32,9 +33,8 @@ def env(name: str, default: str = "") -> str:
 
 
 def int_env(name: str, default: int) -> int:
-    raw = env(name, str(default))
     try:
-        return int(raw)
+        return int(env(name, str(default)))
     except Exception:
         return default
 
@@ -79,9 +79,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext.Application").setLevel(logging.INFO)
 log = logging.getLogger("rza-bot")
 
-
+# نستخدم أسماء جداول جديدة حتى لا تتعارض مع جداول قديمة ناقصة داخل نفس قاعدة البيانات.
 MIGRATIONS = """
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS rza_users_v2 (
     user_id BIGINT PRIMARY KEY,
     username TEXT,
     first_name TEXT,
@@ -94,14 +94,14 @@ CREATE TABLE IF NOT EXISTS users (
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS referrals (
+CREATE TABLE IF NOT EXISTS rza_referrals_v2 (
     id SERIAL PRIMARY KEY,
     referrer_id BIGINT NOT NULL,
     referred_id BIGINT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS bot_logs (
+CREATE TABLE IF NOT EXISTS rza_bot_logs_v2 (
     id SERIAL PRIMARY KEY,
     user_id BIGINT,
     event TEXT NOT NULL,
@@ -109,9 +109,9 @@ CREATE TABLE IF NOT EXISTS bot_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id);
-CREATE INDEX IF NOT EXISTS idx_bot_logs_created_at ON bot_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rza_users_v2_created_at ON rza_users_v2(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rza_referrals_v2_referrer ON rza_referrals_v2(referrer_id);
+CREATE INDEX IF NOT EXISTS idx_rza_bot_logs_v2_created_at ON rza_bot_logs_v2(created_at DESC);
 """
 
 
@@ -127,13 +127,14 @@ class UserRow:
     is_banned: bool = False
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "UserRow":
+    def from_record(cls, record: Any) -> "UserRow":
+        data = dict(record) if record else {}
         return cls(
             user_id=int(data.get("user_id") or 0),
             username=data.get("username"),
             first_name=data.get("first_name"),
             language=data.get("language") or "ar",
-            credits=int(data.get("credits") or 0),
+            credits=int(data.get("credits") if data.get("credits") is not None else DEFAULT_CREDITS),
             total_messages=int(data.get("total_messages") or 0),
             referred_by=data.get("referred_by"),
             is_banned=bool(data.get("is_banned")),
@@ -143,12 +144,12 @@ class UserRow:
 class Store:
     def __init__(self) -> None:
         self.pool: Optional[asyncpg.Pool] = None
-        self.memory_users: Dict[int, UserRow] = {}
         self.db_enabled = False
+        self.memory_users: Dict[int, UserRow] = {}
 
     async def connect(self) -> None:
         if not DATABASE_URL:
-            log.warning("DATABASE_URL is missing. Bot will run with temporary memory storage.")
+            log.warning("DATABASE_URL is missing. Bot will run with memory storage.")
             return
         try:
             self.pool = await asyncio.wait_for(
@@ -163,16 +164,60 @@ class Store:
             async with self.pool.acquire() as conn:
                 await conn.execute(MIGRATIONS)
             self.db_enabled = True
-            log.info("Database connected and migrations executed successfully")
+            log.info("Database connected. Using rza_*_v2 tables.")
         except Exception as e:
-            self.pool = None
+            log.exception("Database failed. Switching to memory storage: %s", e)
             self.db_enabled = False
-            log.exception("Database connection failed. Bot will still respond using memory storage: %s", e)
+            if self.pool:
+                try:
+                    await self.pool.close()
+                except Exception:
+                    pass
+            self.pool = None
 
     async def close(self) -> None:
         if self.pool:
-            await self.pool.close()
-            self.pool = None
+            try:
+                await self.pool.close()
+            finally:
+                self.pool = None
+                self.db_enabled = False
+
+    async def _db_failed(self, where: str, err: Exception) -> None:
+        log.exception("Database error in %s. Switching to memory storage: %s", where, err)
+        self.db_enabled = False
+        if self.pool:
+            try:
+                await self.pool.close()
+            except Exception:
+                pass
+        self.pool = None
+
+    def _memory_upsert(
+        self,
+        user_id: int,
+        username: Optional[str],
+        first_name: Optional[str],
+        referred_by: Optional[int] = None,
+    ) -> UserRow:
+        row = self.memory_users.get(user_id)
+        if row:
+            row.username = username
+            row.first_name = first_name
+            return row
+        row = UserRow(
+            user_id=user_id,
+            username=username,
+            first_name=first_name,
+            referred_by=referred_by if referred_by != user_id else None,
+            credits=DEFAULT_CREDITS,
+        )
+        self.memory_users[user_id] = row
+        if referred_by and referred_by != user_id:
+            ref = self.memory_users.get(referred_by)
+            if ref:
+                ref.credits += REFERRAL_BONUS
+        return row
 
     async def upsert_user(
         self,
@@ -182,127 +227,134 @@ class Store:
         referred_by: Optional[int] = None,
     ) -> UserRow:
         if not self.db_enabled or not self.pool:
-            row = self.memory_users.get(user_id)
-            if row:
-                row.username = username
-                row.first_name = first_name
-                return row
-            row = UserRow(
-                user_id=user_id,
-                username=username,
-                first_name=first_name,
-                referred_by=referred_by,
-                credits=DEFAULT_CREDITS,
-            )
-            self.memory_users[user_id] = row
-            if referred_by and referred_by != user_id and referred_by in self.memory_users:
-                self.memory_users[referred_by].credits += REFERRAL_BONUS
-            return row
+            return self._memory_upsert(user_id, username, first_name, referred_by)
+        try:
+            async with self.pool.acquire() as conn:
+                old = await conn.fetchrow("SELECT * FROM rza_users_v2 WHERE user_id=$1", user_id)
+                if old:
+                    row = await conn.fetchrow(
+                        """
+                        UPDATE rza_users_v2
+                           SET username=$2, first_name=$3, last_seen_at=NOW()
+                         WHERE user_id=$1
+                     RETURNING *
+                        """,
+                        user_id,
+                        username,
+                        first_name,
+                    )
+                    return UserRow.from_record(row)
 
-        async with self.pool.acquire() as conn:
-            old = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
-            if old:
-                new = await conn.fetchrow(
+                row = await conn.fetchrow(
                     """
-                    UPDATE users
-                       SET username=$2, first_name=$3, last_seen_at=NOW()
-                     WHERE user_id=$1
-                 RETURNING *
+                    INSERT INTO rza_users_v2 (user_id, username, first_name, credits, referred_by)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING *
                     """,
                     user_id,
                     username,
                     first_name,
+                    DEFAULT_CREDITS,
+                    referred_by if referred_by != user_id else None,
                 )
-                return UserRow.from_dict(dict(new))
 
-            new = await conn.fetchrow(
-                """
-                INSERT INTO users (user_id, username, first_name, credits, referred_by)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING *
-                """,
-                user_id,
-                username,
-                first_name,
-                DEFAULT_CREDITS,
-                referred_by,
-            )
-
-            if referred_by and referred_by != user_id:
-                inserted = await conn.fetchrow(
-                    """
-                    INSERT INTO referrals (referrer_id, referred_id)
-                    VALUES ($1, $2)
-                    ON CONFLICT (referred_id) DO NOTHING
-                    RETURNING id
-                    """,
-                    referred_by,
-                    user_id,
-                )
-                if inserted:
-                    await conn.execute(
-                        "UPDATE users SET credits = credits + $1 WHERE user_id=$2",
-                        REFERRAL_BONUS,
+                if referred_by and referred_by != user_id:
+                    inserted = await conn.fetchrow(
+                        """
+                        INSERT INTO rza_referrals_v2 (referrer_id, referred_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (referred_id) DO NOTHING
+                        RETURNING id
+                        """,
                         referred_by,
+                        user_id,
                     )
-            return UserRow.from_dict(dict(new))
+                    if inserted:
+                        await conn.execute(
+                            "UPDATE rza_users_v2 SET credits = credits + $1 WHERE user_id=$2",
+                            REFERRAL_BONUS,
+                            referred_by,
+                        )
+                return UserRow.from_record(row)
+        except Exception as e:
+            await self._db_failed("upsert_user", e)
+            return self._memory_upsert(user_id, username, first_name, referred_by)
 
     async def get_user(self, user_id: int) -> Optional[UserRow]:
         if not self.db_enabled or not self.pool:
             return self.memory_users.get(user_id)
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
-            return UserRow.from_dict(dict(row)) if row else None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM rza_users_v2 WHERE user_id=$1", user_id)
+                return UserRow.from_record(row) if row else None
+        except Exception as e:
+            await self._db_failed("get_user", e)
+            return self.memory_users.get(user_id)
 
     async def touch_message(self, user_id: int) -> None:
+        row = self.memory_users.get(user_id)
+        if row:
+            row.total_messages += 1
         if not self.db_enabled or not self.pool:
-            row = self.memory_users.get(user_id)
-            if row:
-                row.total_messages += 1
             return
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET total_messages = total_messages + 1, last_seen_at=NOW() WHERE user_id=$1",
-                user_id,
-            )
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE rza_users_v2 SET total_messages = total_messages + 1, last_seen_at=NOW() WHERE user_id=$1",
+                    user_id,
+                )
+        except Exception as e:
+            await self._db_failed("touch_message", e)
 
     async def set_language(self, user_id: int, language: str) -> None:
+        row = self.memory_users.get(user_id)
+        if row:
+            row.language = language
         if not self.db_enabled or not self.pool:
-            row = self.memory_users.get(user_id)
-            if row:
-                row.language = language
             return
-        async with self.pool.acquire() as conn:
-            await conn.execute("UPDATE users SET language=$1 WHERE user_id=$2", language, user_id)
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("UPDATE rza_users_v2 SET language=$1 WHERE user_id=$2", language, user_id)
+        except Exception as e:
+            await self._db_failed("set_language", e)
 
     async def add_credits(self, user_id: int, amount: int) -> Optional[int]:
-        if not self.db_enabled or not self.pool:
-            row = self.memory_users.get(user_id)
-            if not row:
-                return None
+        row = self.memory_users.get(user_id)
+        if row:
             row.credits += amount
-            return row.credits
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "UPDATE users SET credits = credits + $1 WHERE user_id=$2 RETURNING credits",
-                amount,
-                user_id,
-            )
-            return int(row["credits"]) if row else None
+            memory_balance = row.credits
+        else:
+            memory_balance = None
+        if not self.db_enabled or not self.pool:
+            return memory_balance
+        try:
+            async with self.pool.acquire() as conn:
+                dbrow = await conn.fetchrow(
+                    "UPDATE rza_users_v2 SET credits = credits + $1 WHERE user_id=$2 RETURNING credits",
+                    amount,
+                    user_id,
+                )
+                return int(dbrow["credits"]) if dbrow else memory_balance
+        except Exception as e:
+            await self._db_failed("add_credits", e)
+            return memory_balance
 
     async def set_banned(self, user_id: int, banned: bool) -> bool:
-        if not self.db_enabled or not self.pool:
-            row = self.memory_users.get(user_id)
-            if not row:
-                return False
+        row = self.memory_users.get(user_id)
+        if row:
             row.is_banned = banned
-            return True
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "UPDATE users SET is_banned=$1 WHERE user_id=$2 RETURNING user_id",
-                banned,
-                user_id,
-            )
+        if not self.db_enabled or not self.pool:
+            return bool(row)
+        try:
+            async with self.pool.acquire() as conn:
+                dbrow = await conn.fetchrow(
+                    "UPDATE rza_users_v2 SET is_banned=$1 WHERE user_id=$2 RETURNING user_id",
+                    banned,
+                    user_id,
+                )
+                return bool(dbrow or row)
+        except Exception as e:
+            await self._db_failed("set_banned", e)
             return bool(row)
 
     async def stats(self) -> Dict[str, int]:
@@ -315,25 +367,33 @@ class Store:
                 "referrals": sum(1 for u in users if u.referred_by),
                 "database": 0,
             }
-        async with self.pool.acquire() as conn:
-            users = await conn.fetchval("SELECT COUNT(*) FROM users")
-            banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned=TRUE")
-            messages = await conn.fetchval("SELECT COALESCE(SUM(total_messages), 0) FROM users")
-            referrals = await conn.fetchval("SELECT COUNT(*) FROM referrals")
-            return {
-                "users": int(users or 0),
-                "banned": int(banned or 0),
-                "messages": int(messages or 0),
-                "referrals": int(referrals or 0),
-                "database": 1,
-            }
+        try:
+            async with self.pool.acquire() as conn:
+                users = await conn.fetchval("SELECT COUNT(*) FROM rza_users_v2")
+                banned = await conn.fetchval("SELECT COUNT(*) FROM rza_users_v2 WHERE is_banned=TRUE")
+                messages = await conn.fetchval("SELECT COALESCE(SUM(total_messages), 0) FROM rza_users_v2")
+                referrals = await conn.fetchval("SELECT COUNT(*) FROM rza_referrals_v2")
+                return {
+                    "users": int(users or 0),
+                    "banned": int(banned or 0),
+                    "messages": int(messages or 0),
+                    "referrals": int(referrals or 0),
+                    "database": 1,
+                }
+        except Exception as e:
+            await self._db_failed("stats", e)
+            return await self.stats()
 
     async def active_user_ids(self) -> List[int]:
         if not self.db_enabled or not self.pool:
             return [uid for uid, row in self.memory_users.items() if not row.is_banned]
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT user_id FROM users WHERE is_banned=FALSE")
-            return [int(r["user_id"]) for r in rows]
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("SELECT user_id FROM rza_users_v2 WHERE is_banned=FALSE")
+                return [int(r["user_id"]) for r in rows]
+        except Exception as e:
+            await self._db_failed("active_user_ids", e)
+            return [uid for uid, row in self.memory_users.items() if not row.is_banned]
 
 
 store = Store()
@@ -386,7 +446,6 @@ async def ensure_user(update: Update) -> Optional[UserRow]:
     user = update.effective_user
     if not user:
         return None
-
     referred_by: Optional[int] = None
     msg = update.effective_message
     if msg and msg.text and msg.text.startswith("/start"):
@@ -395,25 +454,36 @@ async def ensure_user(update: Update) -> Optional[UserRow]:
             arg = parts[1].strip()
             if arg.startswith("ref_") and arg[4:].isdigit():
                 referred_by = int(arg[4:])
+    return await store.upsert_user(user.id, user.username, user.first_name, referred_by)
 
-    return await store.upsert_user(
-        user_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        referred_by=referred_by,
-    )
+
+async def safe_reply(message, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None, parse_mode: Optional[str] = None) -> None:
+    if not message:
+        return
+    try:
+        await message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True)
+    except BadRequest:
+        # إذا صار خطأ HTML، أرسل النص بدون parse_mode حتى لا يتوقف البوت.
+        await message.reply_text(text, reply_markup=reply_markup, disable_web_page_preview=True)
 
 
 async def send_or_edit(update: Update, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None, parse_mode: Optional[str] = None) -> None:
     try:
         if update.callback_query:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            try:
+                await update.callback_query.edit_message_text(
+                    text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True
+                )
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    return
+                raise
         elif update.effective_message:
-            await update.effective_message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            await safe_reply(update.effective_message, text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramError as e:
         log.warning("send_or_edit failed: %s", e)
         if update.effective_message:
-            await update.effective_message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            await safe_reply(update.effective_message, text, reply_markup=reply_markup)
 
 
 async def home(update: Update) -> None:
@@ -452,13 +522,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user(update)
-    await update.effective_message.reply_text("pong ✅ البوت يستجيب")
+    await safe_reply(update.effective_message, "pong ✅ البوت يستجيب")
 
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if user:
-        await update.effective_message.reply_text(f"ID: <code>{user.id}</code>", parse_mode=ParseMode.HTML)
+        await safe_reply(update.effective_message, f"ID: <code>{user.id}</code>", parse_mode=ParseMode.HTML)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -478,23 +548,23 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/unban USER_ID\n"
         "/broadcast الرسالة"
     )
-    await update.effective_message.reply_text(text, reply_markup=back_keyboard())
+    await safe_reply(update.effective_message, text, reply_markup=back_keyboard())
 
 
 async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     row = await ensure_user(update)
     if not row:
         return
-    username = f"@{row.username}" if row.username else "بدون"
+    username = f"@{html.escape(row.username)}" if row.username else "بدون"
     text = (
         "👤 حسابك\n\n"
         f"ID: <code>{row.user_id}</code>\n"
         f"Username: <b>{username}</b>\n"
         f"Credits: <b>{row.credits}</b>\n"
-        f"Language: <b>{row.language}</b>\n"
+        f"Language: <b>{html.escape(row.language)}</b>\n"
         f"Messages: <b>{row.total_messages}</b>"
     )
-    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=back_keyboard())
+    await safe_reply(update.effective_message, text, parse_mode=ParseMode.HTML, reply_markup=back_keyboard())
 
 
 async def cmd_ref(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -504,9 +574,10 @@ async def cmd_ref(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     bot_user = await context.bot.get_me()
     link = f"https://t.me/{bot_user.username}?start=ref_{user.id}"
-    await update.effective_message.reply_text(
+    await safe_reply(
+        update.effective_message,
         "🎁 رابط دعوتك:\n"
-        f"<code>{link}</code>\n\n"
+        f"<code>{html.escape(link)}</code>\n\n"
         f"كل دعوة ناجحة تضيف لك {REFERRAL_BONUS} كريدت.",
         parse_mode=ParseMode.HTML,
         reply_markup=back_keyboard(),
@@ -516,81 +587,79 @@ async def cmd_ref(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not is_admin(user.id if user else None):
-        await update.effective_message.reply_text("ما عندك صلاحية.")
+        await safe_reply(update.effective_message, "ما عندك صلاحية.")
         return
     s = await store.stats()
-    await update.effective_message.reply_text(
+    await safe_reply(
+        update.effective_message,
         "📊 الإحصائيات\n\n"
         f"المستخدمين: {s['users']}\n"
         f"المحظورين: {s['banned']}\n"
         f"الإحالات: {s['referrals']}\n"
         f"الرسائل: {s['messages']}\n"
-        f"قاعدة البيانات: {'متصلة' if s['database'] else 'وضع مؤقت'}"
+        f"قاعدة البيانات: {'متصلة' if s['database'] else 'وضع مؤقت'}",
     )
 
 
 async def cmd_addcredit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not is_admin(user.id if user else None):
-        await update.effective_message.reply_text("ما عندك صلاحية.")
+        await safe_reply(update.effective_message, "ما عندك صلاحية.")
         return
     if len(context.args) != 2:
-        await update.effective_message.reply_text("الاستخدام: /addcredit USER_ID AMOUNT")
+        await safe_reply(update.effective_message, "الاستخدام: /addcredit USER_ID AMOUNT")
         return
     try:
         target = int(context.args[0])
         amount = int(context.args[1])
     except ValueError:
-        await update.effective_message.reply_text("USER_ID و AMOUNT لازم أرقام.")
+        await safe_reply(update.effective_message, "USER_ID و AMOUNT لازم أرقام.")
         return
     balance = await store.add_credits(target, amount)
-    if balance is None:
-        await update.effective_message.reply_text("المستخدم غير موجود.")
-    else:
-        await update.effective_message.reply_text(f"تم ✅ الرصيد الجديد: {balance}")
+    await safe_reply(update.effective_message, "المستخدم غير موجود." if balance is None else f"تم ✅ الرصيد الجديد: {balance}")
 
 
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not is_admin(user.id if user else None):
-        await update.effective_message.reply_text("ما عندك صلاحية.")
+        await safe_reply(update.effective_message, "ما عندك صلاحية.")
         return
     if len(context.args) != 1:
-        await update.effective_message.reply_text("الاستخدام: /ban USER_ID")
+        await safe_reply(update.effective_message, "الاستخدام: /ban USER_ID")
         return
     try:
         ok = await store.set_banned(int(context.args[0]), True)
     except ValueError:
         ok = False
-    await update.effective_message.reply_text("تم الحظر ✅" if ok else "المستخدم غير موجود أو الآيدي خطأ.")
+    await safe_reply(update.effective_message, "تم الحظر ✅" if ok else "المستخدم غير موجود أو الآيدي خطأ.")
 
 
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not is_admin(user.id if user else None):
-        await update.effective_message.reply_text("ما عندك صلاحية.")
+        await safe_reply(update.effective_message, "ما عندك صلاحية.")
         return
     if len(context.args) != 1:
-        await update.effective_message.reply_text("الاستخدام: /unban USER_ID")
+        await safe_reply(update.effective_message, "الاستخدام: /unban USER_ID")
         return
     try:
         ok = await store.set_banned(int(context.args[0]), False)
     except ValueError:
         ok = False
-    await update.effective_message.reply_text("تم إلغاء الحظر ✅" if ok else "المستخدم غير موجود أو الآيدي خطأ.")
+    await safe_reply(update.effective_message, "تم إلغاء الحظر ✅" if ok else "المستخدم غير موجود أو الآيدي خطأ.")
 
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not is_admin(user.id if user else None):
-        await update.effective_message.reply_text("ما عندك صلاحية.")
+        await safe_reply(update.effective_message, "ما عندك صلاحية.")
         return
     text = " ".join(context.args).strip()
     if not text:
-        await update.effective_message.reply_text("الاستخدام: /broadcast رسالتك")
+        await safe_reply(update.effective_message, "الاستخدام: /broadcast رسالتك")
         return
     ids = await store.active_user_ids()
-    await update.effective_message.reply_text(f"جاري الإرسال إلى {len(ids)} مستخدم…")
+    await safe_reply(update.effective_message, f"جاري الإرسال إلى {len(ids)} مستخدم…")
     sent = 0
     failed = 0
     for uid in ids:
@@ -600,7 +669,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await asyncio.sleep(0.05)
         except TelegramError:
             failed += 1
-    await update.effective_message.reply_text(f"تم ✅\nنجح: {sent}\nفشل: {failed}")
+    await safe_reply(update.effective_message, f"تم ✅\nنجح: {sent}\nفشل: {failed}")
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -610,10 +679,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not row or not user or not msg:
         return
     if row.is_banned:
-        await msg.reply_text("🚫 حسابك محظور.")
+        await safe_reply(msg, "🚫 حسابك محظور.")
         return
     await store.touch_message(user.id)
-    await msg.reply_text("وصلت رسالتك ✅\nاختار من الأزرار أو اكتب /help", reply_markup=main_keyboard(user.id))
+    await safe_reply(msg, "وصلت رسالتك ✅\nاختار من الأزرار أو اكتب /help", reply_markup=main_keyboard(user.id))
 
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -650,13 +719,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.edit_message_text("تم تغيير اللغة ✅", reply_markup=main_keyboard(q.from_user.id))
         return
     if data == "account":
-        username = f"@{row.username}" if row.username else "بدون"
+        username = f"@{html.escape(row.username)}" if row.username else "بدون"
         await q.edit_message_text(
             "👤 حسابك\n\n"
             f"ID: <code>{row.user_id}</code>\n"
             f"Username: <b>{username}</b>\n"
             f"Credits: <b>{row.credits}</b>\n"
-            f"Language: <b>{row.language}</b>\n"
+            f"Language: <b>{html.escape(row.language)}</b>\n"
             f"Messages: <b>{row.total_messages}</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=back_keyboard(),
@@ -667,7 +736,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         link = f"https://t.me/{bot_user.username}?start=ref_{q.from_user.id}"
         await q.edit_message_text(
             "🎁 رابط دعوتك:\n"
-            f"<code>{link}</code>\n\n"
+            f"<code>{html.escape(link)}</code>\n\n"
             f"كل دعوة ناجحة تضيف لك {REFERRAL_BONUS} كريدت.",
             parse_mode=ParseMode.HTML,
             reply_markup=back_keyboard(),
@@ -700,14 +769,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("الأمر غير معروف. جرّب /start أو /ping")
+    await safe_reply(update.effective_message, "الأمر غير معروف. جرّب /start أو /ping")
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    log.exception("Telegram update error: %s", context.error)
+    log.exception("Telegram update error", exc_info=context.error)
     try:
         if isinstance(update, Update) and update.effective_message:
-            await update.effective_message.reply_text("صار خطأ مؤقت، جرّب /start مرة ثانية.")
+            await safe_reply(update.effective_message, "صار خطأ داخلي وانسجل بالـ Logs. جرّب /ping، وإذا رد فالمشكلة كانت بقاعدة البيانات وانحلت تلقائياً.")
     except Exception:
         pass
 
@@ -740,10 +809,7 @@ async def stop_health_server() -> None:
 async def post_init(app: Application) -> None:
     await start_health_server()
     await store.connect()
-
-    # يمسح أي Webhook قديم بدون حذف رسائلك الحالية حتى لا يبلع /start
-    await app.bot.delete_webhook(drop_pending_updates=False)
-
+    await app.bot.delete_webhook(drop_pending_updates=True)
     me = await app.bot.get_me()
     log.info("Telegram bot connected: @%s id=%s", me.username, me.id)
     log.info("Polling is active. Send /start or /ping to @%s", me.username)
@@ -758,7 +824,6 @@ async def post_shutdown(app: Application) -> None:
 def build_application() -> Application:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing in Railway Variables")
-
     app = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -767,7 +832,6 @@ def build_application() -> Application:
         .concurrent_updates(False)
         .build()
     )
-
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("id", cmd_id))
@@ -775,14 +839,12 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("me", cmd_me))
     app.add_handler(CommandHandler("account", cmd_me))
     app.add_handler(CommandHandler("ref", cmd_ref))
-
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("addcredit", cmd_addcredit))
     app.add_handler(CommandHandler("addcredits", cmd_addcredit))
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
-
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(MessageHandler(filters.COMMAND, on_unknown_command))
@@ -796,7 +858,7 @@ def main() -> None:
     try:
         app.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=False,
+            drop_pending_updates=True,
             poll_interval=1.0,
             timeout=20,
             close_loop=True,

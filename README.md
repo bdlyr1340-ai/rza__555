@@ -19,11 +19,11 @@ python main.py
 
 ## Test
 
-Send to the bot:
+Send:
 
 ```text
 /start
 /ping
 ```
 
-If the deployment is active but the bot does not answer, stop/delete any other Railway service using the same BOT_TOKEN, then redeploy this project.
+This version uses new database tables: `rza_users_v2`, `rza_referrals_v2`, `rza_bot_logs_v2` to avoid old table conflicts.
