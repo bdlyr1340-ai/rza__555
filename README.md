@@ -1,6 +1,6 @@
 # RZA Telegram Bot - Railway Ready
 
-## Railway Variables
+## Railway variables
 
 ```env
 BOT_TOKEN=
@@ -22,8 +22,8 @@ python main.py
 Send:
 
 ```text
-/start
 /ping
+/start
 ```
 
-This version uses new database tables: `rza_users_v2`, `rza_referrals_v2`, `rza_bot_logs_v2` to avoid old table conflicts.
+This package keeps the full Telegram bot structure: handlers, database, buttons, admin commands, referral, and Railway files.
