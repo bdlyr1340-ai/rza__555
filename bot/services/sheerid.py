@@ -905,17 +905,17 @@ async def verify_gemini_auto(
         await on_progress(_build_progress(1, error="كلمة المرور قصيرة جداً"))
         return {"success": False, "error": "كلمة المرور يجب أن تكون 6 أحرف على الأقل"}
 
-    # Generate TOTP code from secret if provided
-    totp_code = ""
+    # Validate TOTP secret early, but generate code lazily right before use
+    totp_obj = None
     if totp_secret:
         try:
             import pyotp
             clean_secret = totp_secret.replace(" ", "").strip().upper()
-            totp = pyotp.TOTP(clean_secret)
-            totp_code = totp.now()
-            log.info("Generated TOTP code from secret for %s", gmail)
+            totp_obj = pyotp.TOTP(clean_secret)
+            totp_obj.now()  # validate the secret is valid base32
+            log.info("TOTP secret validated for %s", gmail)
         except Exception as exc:
-            log.warning("Failed to generate TOTP from secret: %s", exc)
+            log.warning("Failed to validate TOTP secret: %s", exc)
             await on_progress(_build_progress(2, error=f"مفتاح 2FA غير صالح: {exc}"))
             return {"success": False, "error": f"مفتاح 2FA السري غير صالح: {exc}"}
 
@@ -1073,7 +1073,8 @@ async def verify_gemini_auto(
         )
 
         if await totp_input.count() > 0:
-            if totp_code and totp_code != "000000":
+            if totp_obj:
+                totp_code = totp_obj.now()  # generate fresh code right before use
                 await totp_input.first.fill(totp_code)
                 # Find and click Next button
                 totp_next = page.locator("#totpNext")
@@ -1095,8 +1096,8 @@ async def verify_gemini_auto(
 
                 await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
             else:
-                await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل الرمز"))
-                result = {"success": False, "error": "الحساب يتطلب رمز المصادقة الثنائية (2FA)"}
+                await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل مفتاح 2FA السري"))
+                result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
                 return result
         elif is_2fa_page:
             # 2FA page but no TOTP input — might be phone prompt, security key, etc.
@@ -1129,8 +1130,9 @@ async def verify_gemini_auto(
 
                     # Now look for TOTP input again
                     totp_input2 = page.locator('input[type="tel"]:visible, input[id="totpPin"]:visible')
-                    if await totp_input2.count() > 0 and totp_code and totp_code != "000000":
-                        await totp_input2.first.fill(totp_code)
+                    if await totp_input2.count() > 0 and totp_obj:
+                        totp_code2 = totp_obj.now()  # fresh code for alternate path
+                        await totp_input2.first.fill(totp_code2)
                         totp_next2 = page.locator("#totpNext")
                         if await totp_next2.count() == 0:
                             totp_next2 = page.get_by_role("button", name="Next")
@@ -1138,13 +1140,13 @@ async def verify_gemini_auto(
                             await totp_next2.click()
                         await asyncio.sleep(4)
                         await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
-                    elif totp_code and totp_code != "000000":
+                    elif totp_obj:
                         await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
                         result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
                         return result
                     else:
-                        await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل الرمز"))
-                        result = {"success": False, "error": "الحساب يتطلب رمز المصادقة الثنائية (2FA)"}
+                        await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل مفتاح 2FA السري"))
+                        result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
                         return result
                 else:
                     await on_progress(_build_progress(2, error="نوع التحقق غير مدعوم — يجب تفعيل Google Authenticator"))
