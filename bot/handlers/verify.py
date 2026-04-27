@@ -76,6 +76,9 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
             reply_markup=main_menu(),
         )
 
+    err_line = ""
+    if not result.get("success") and result.get("error"):
+        err_line = f"السبب: {result['error']}\n"
     admin_text = (
         "📥 طلب تحقق جديد (تلقائي)\n\n"
         f"المستخدم: {user.id}\n"
@@ -83,6 +86,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
         f"الخدمة: {meta['label']}\n"
         f"رقم الطلب: {ver_id}\n"
         f"النتيجة: {'نجاح ✅' if result.get('success') else 'فشل ❌'}\n"
+        f"{err_line}"
     )
     for admin_id in config.ADMIN_IDS:
         try:
