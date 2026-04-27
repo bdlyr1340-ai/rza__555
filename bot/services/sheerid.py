@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import random
 import re
 import time
@@ -905,32 +906,60 @@ async def verify_gemini_auto(
     browser = None
     page = None
     pw_instance = None
+    cdp_mode = False
     result: Dict[str, Any] = {"success": False, "error": "خطأ غير متوقع"}
 
     try:
         pw_instance = await async_playwright().start()
-        browser = await pw_instance.chromium.launch(headless=True, args=["--no-sandbox"])
-        ctx_browser = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-        )
+
+        # Try CDP connection to real Chrome first (avoids Google bot detection)
+        try:
+            browser = await pw_instance.chromium.connect_over_cdp(
+                os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
+                timeout=5000,
+            )
+            cdp_mode = True
+            ctx_browser = browser.contexts[0] if browser.contexts else await browser.new_context()
+            log.info("Using CDP connection to real Chrome browser")
+        except Exception:
+            # Fall back to launching headless Chromium
+            log.info("CDP not available, launching headless Chromium")
+            browser = await pw_instance.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
+            ctx_browser = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+            )
+
         page = await ctx_browser.new_page()
 
         # ── Step 1: الإيميل — enter email in Google ──
         await on_progress(_build_progress(0, detail=f"تسجيل الدخول بـ {gmail}..."))
         await page.goto("https://accounts.google.com/signin", wait_until="networkidle", timeout=30000)
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
+        # Check if email input is visible; Google may show a different page
         email_input = page.locator('input[type="email"]')
+        if await email_input.count() == 0:
+            cur_url = page.url
+            title = await page.title()
+            log.warning("Google signin: no email input. URL=%s title=%s", cur_url, title)
+            await on_progress(_build_progress(0, error=f"صفحة Google غير متوقعة: {title}"))
+            result = {"success": False, "error": f"صفحة Google غير متوقعة: {title}"}
+            return result
+
         await email_input.fill(gmail)
         next_btn = page.locator("#identifierNext")
         if await next_btn.count() == 0:
             next_btn = page.get_by_role("button", name="Next")
         await next_btn.click()
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
 
         # Check for email error
         email_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .Ekjuhf")
@@ -947,23 +976,47 @@ async def verify_gemini_auto(
         # ── Step 2: كلمة السر — enter password ──
         pwd_input = page.locator('input[type="password"]:visible')
         try:
-            await pwd_input.wait_for(state="visible", timeout=15000)
+            await pwd_input.wait_for(state="visible", timeout=20000)
         except Exception:
-            page_text = await page.content()
+            cur_url = page.url
+            title = await page.title()
+            page_text = await page.inner_text("body")
+            log.warning(
+                "Google pwd page not found. URL=%s title=%s body_snippet=%s",
+                cur_url, title, page_text[:500],
+            )
+
+            # Check specific Google pages
             if "find your Google Account" in page_text or "العثور على" in page_text:
                 await on_progress(_build_progress(0, error="الإيميل غير موجود في Google"))
                 result = {"success": False, "error": "الإيميل غير موجود في Google"}
                 return result
-            await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور"))
-            result = {"success": False, "error": "فشل الوصول لصفحة كلمة المرور"}
-            return result
+            if "captcha" in page_text.lower() or "robot" in page_text.lower():
+                await on_progress(_build_progress(1, error="Google يطلب CAPTCHA — جرّب لاحقاً"))
+                result = {"success": False, "error": "Google يطلب CAPTCHA — جرّب بعد فترة"}
+                return result
+            if "verify" in cur_url.lower() or "challenge" in cur_url.lower():
+                await on_progress(_build_progress(1, error="Google يطلب تحقق أمني إضافي"))
+                result = {"success": False, "error": f"Google يطلب تحقق أمني إضافي ({title})"}
+                return result
+
+            # Try alternative password selectors
+            alt_pwd = page.locator('input[name="Passwd"], input[name="password"], input[aria-label="Password"]')
+            if await alt_pwd.count() > 0:
+                pwd_input = alt_pwd.first
+                log.info("Found password input via alternative selector")
+            else:
+                detail = f"الصفحة: {title} | الرابط: {cur_url[:80]}"
+                await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور", detail=detail))
+                result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
+                return result
 
         await pwd_input.fill(gmail_password)
         pwd_next = page.locator("#passwordNext")
         if await pwd_next.count() == 0:
             pwd_next = page.get_by_role("button", name="Next")
         await pwd_next.click()
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
 
         # Check for wrong password error
         pwd_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab")
@@ -974,6 +1027,15 @@ async def verify_gemini_auto(
                 await on_progress(_build_progress(1, error=f"خطأ: {err_text.strip()}"))
                 result = {"success": False, "error": f"كلمة المرور خاطئة: {err_text.strip()}"}
                 return result
+
+        # Check if we're on a security challenge page after password
+        cur_url = page.url
+        if "challenge" in cur_url.lower() or "signin/rejected" in cur_url.lower():
+            title = await page.title()
+            log.warning("Google security challenge after password: URL=%s", cur_url)
+            await on_progress(_build_progress(1, error=f"Google يطلب تحقق أمني: {title}"))
+            result = {"success": False, "error": f"Google رفض تسجيل الدخول — تحقق أمني: {title}"}
+            return result
 
         await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
 
@@ -987,6 +1049,10 @@ async def verify_gemini_auto(
                 await totp_next.click()
             await asyncio.sleep(3)
             await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
+        elif await totp_input.count() > 0 and (not totp_code or totp_code == "000000"):
+            await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل الرمز"))
+            result = {"success": False, "error": "الحساب يتطلب رمز المصادقة الثنائية (2FA)"}
+            return result
         else:
             await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح! (بدون 2FA)"))
 
@@ -1135,7 +1201,13 @@ async def verify_gemini_auto(
         return result
 
     finally:
-        if browser:
+        # In CDP mode, only close the page (not the shared browser)
+        if cdp_mode and page:
+            try:
+                await page.close()
+            except Exception:
+                pass
+        elif browser:
             try:
                 await browser.close()
             except Exception:
