@@ -924,6 +924,7 @@ async def verify_gemini_auto(
     browser = None
     page = None
     pw_instance = None
+    ctx_browser = None
     cdp_mode = False
     result: Dict[str, Any] = {"success": False, "error": "خطأ غير متوقع"}
 
@@ -937,8 +938,9 @@ async def verify_gemini_auto(
                 timeout=5000,
             )
             cdp_mode = True
-            ctx_browser = browser.contexts[0] if browser.contexts else await browser.new_context()
-            log.info("Using CDP connection to real Chrome browser")
+            # Always create a fresh incognito context to avoid stale sessions
+            ctx_browser = await browser.new_context()
+            log.info("Using CDP connection to real Chrome browser (fresh context)")
         except Exception:
             # Fall back to launching headless Chromium
             log.info("CDP not available, launching headless Chromium")
@@ -1374,10 +1376,10 @@ async def verify_gemini_auto(
         return result
 
     finally:
-        # In CDP mode, only close the page (not the shared browser)
-        if cdp_mode and page:
+        # In CDP mode, close the incognito context (not the shared browser)
+        if cdp_mode and ctx_browser:
             try:
-                await page.close()
+                await ctx_browser.close()
             except Exception:
                 pass
         elif browser:
