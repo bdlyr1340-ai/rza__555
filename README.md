@@ -24,19 +24,22 @@ LOG_LEVEL=INFO
 python main.py
 ```
 
-The Dockerfile and railway.json force Railway to use Python, so it will not try to run `node`.
-
-## Bot Commands
+## Commands
 
 - `/start`
 - `/help`
 - `/id`
 - `/account`
+- `/me`
+- `/ref`
 
-Admin commands:
+Admin:
 
 - `/stats`
 - `/addcredits USER_ID AMOUNT`
 - `/ban USER_ID`
 - `/unban USER_ID`
 - `/broadcast message`
+
+Railway will build with the Dockerfile, so it will not run `node`.
+The database file is named `rza_database.py` to avoid conflicts with any folder named `db`.
