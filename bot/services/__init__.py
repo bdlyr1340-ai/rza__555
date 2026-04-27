@@ -1,4 +1,4 @@
-"""Service registry for the Telegram buttons."""
+"""سجل الخدمات والأزرار."""
 from __future__ import annotations
 
 import re
@@ -10,6 +10,7 @@ from typing import Dict, Optional
 class ServiceMeta:
     key: str
     label: str
+    script: str
     description: str
     url_hints: list[str]
 
@@ -17,18 +18,20 @@ class ServiceMeta:
         return {
             "key": self.key,
             "label": self.label,
+            "script": self.script,
             "description": self.description,
         }
 
 
+# ترتيب العناصر = ترتيب الأزرار
 _SERVICES = [
-    ServiceMeta("spotify", "🎵 Spotify Premium", "خدمة Spotify", ["spotify"]),
-    ServiceMeta("youtube", "🎬 YouTube Premium", "خدمة YouTube", ["youtube", "google"]),
-    ServiceMeta("google_one", "🤖 Google One / Gemini", "خدمة Google One / Gemini", ["googleone", "gemini", "google-one"]),
-    ServiceMeta("boltnew", "👨‍🏫 Bolt.new", "خدمة Bolt.new", ["bolt"]),
-    ServiceMeta("k12", "🏫 K12 ChatGPT Plus", "خدمة K12", ["openai", "chatgpt", "k12"]),
-    ServiceMeta("veterans", "🎖️ Veterans", "خدمة Veterans", ["veteran", "military"]),
-    ServiceMeta("perplexity", "🔍 Perplexity Pro", "خدمة Perplexity", ["perplexity"]),
+    ServiceMeta("spotify", "🎵 سبوتيفاي بريميوم", "spotify_main.py", "خدمة سبوتيفاي بريميوم", ["spotify"]),
+    ServiceMeta("youtube", "🎬 يوتيوب بريميوم", "youtube_main.py", "خدمة يوتيوب بريميوم", ["youtube"]),
+    ServiceMeta("google_one", "🤖 جوجل ون / جيمناي", "google_one_main.py", "خدمة Google One / Gemini", ["googleone", "gemini", "google-one", "google"]),
+    ServiceMeta("boltnew", "👨‍🏫 بولت للمعلمين", "boltnew_main.py", "خدمة Bolt.new", ["bolt"]),
+    ServiceMeta("k12", "🏫 ChatGPT K12", "k12_main.py", "خدمة ChatGPT K12", ["openai", "chatgpt", "k12"]),
+    ServiceMeta("veterans", "🎖️ العسكريين / المتقاعدين", "veterans_main.py", "خدمة العسكريين والمتقاعدين", ["veteran", "military"]),
+    ServiceMeta("perplexity", "🔍 بيربلكسيتي برو", "perplexity_main.py", "خدمة Perplexity Pro", ["perplexity"]),
 ]
 
 SERVICE_REGISTRY: Dict[str, dict] = {s.key: s.asdict() for s in _SERVICES}
