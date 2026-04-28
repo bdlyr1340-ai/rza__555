@@ -196,7 +196,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
         f"اليوزر: @{user.username or '-'}\n"
         f"الخدمة: {meta['label']}\n"
         f"رقم الطلب: {ver_id}\n"
-        f"النتيجة: {'نجاح ✅' if result.get('success') else 'فشل ❌'}\n"
+        f"النتيجة: {'نجاح ✅' if result.get('success') else ('قيد المراجعة ⏳' if result.get('pending') else 'فشل ❌')}\n"
         f"{extra_lines}"
     )
     for admin_id in config.ADMIN_IDS:

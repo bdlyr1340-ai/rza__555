@@ -150,3 +150,57 @@ async def admin_stats() -> Dict[str, Any]:
         "ver_success": ver_success or 0,
         "per_service": [dict(r) for r in per_service],
     }
+
+
+# ---------------------------------------------------------------------------
+# Payment cards
+# ---------------------------------------------------------------------------
+
+async def add_payment_card(
+    card_number: str, expiry: str, cvv: str, cardholder: str = "", added_by: Optional[int] = None
+) -> int:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        row = await c.fetchrow(
+            "INSERT INTO payment_cards (card_number, expiry, cvv, cardholder, added_by) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            card_number, expiry, cvv, cardholder, added_by,
+        )
+        return int(row["id"])
+
+
+async def list_payment_cards() -> List[Dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        rows = await c.fetch(
+            "SELECT id, card_number, expiry, cvv, cardholder, is_active, fail_count, created_at "
+            "FROM payment_cards ORDER BY id"
+        )
+        return [dict(r) for r in rows]
+
+
+async def delete_payment_card(card_id: int) -> bool:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        result = await c.execute("DELETE FROM payment_cards WHERE id = $1", card_id)
+        return result == "DELETE 1"
+
+
+async def get_active_cards() -> List[Dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        rows = await c.fetch(
+            "SELECT id, card_number, expiry, cvv, cardholder "
+            "FROM payment_cards WHERE is_active = TRUE "
+            "ORDER BY fail_count ASC, id ASC"
+        )
+        return [dict(r) for r in rows]
+
+
+async def mark_card_failed(card_id: int) -> None:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        await c.execute(
+            "UPDATE payment_cards SET fail_count = fail_count + 1 WHERE id = $1",
+            card_id,
+        )

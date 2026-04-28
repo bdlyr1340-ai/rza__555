@@ -722,6 +722,107 @@ async def verify_veterans(url: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Payment card helper
+# ---------------------------------------------------------------------------
+
+async def _fill_payment_card(page, cards: list) -> dict:
+    """Try to fill payment card on Google's payment page. Try each card in order."""
+    from bot.db import models as db_models
+
+    for card in cards:
+        card_num = card["card_number"]
+        expiry = card["expiry"]
+        cvv = card["cvv"]
+        cardholder = card.get("cardholder", "")
+        log.info("Trying payment card #%s (%s****)", card["id"], card_num[:4])
+
+        try:
+            # Look for card number input (Google Pay / Google One payment forms)
+            card_input = page.locator(
+                'input[name="cardnumber"], input[autocomplete="cc-number"], '
+                'input[aria-label*="Card number"], input[aria-label*="card number"], '
+                'input[placeholder*="Card"], input[id*="cardNumber"], '
+                'input[name="ccNumber"]'
+            ).first
+            if await card_input.count() > 0:
+                await card_input.click()
+                await card_input.fill(card_num)
+                await asyncio.sleep(0.5)
+
+                # Expiry
+                exp_input = page.locator(
+                    'input[name="cc-exp"], input[autocomplete="cc-exp"], '
+                    'input[aria-label*="Expir"], input[aria-label*="expir"], '
+                    'input[placeholder*="MM"], input[id*="expir"], '
+                    'input[name="ccExpMonth"]'
+                ).first
+                if await exp_input.count() > 0:
+                    await exp_input.click()
+                    await exp_input.fill(expiry.replace("/", ""))
+                    await asyncio.sleep(0.3)
+
+                # CVV/CVC
+                cvv_input = page.locator(
+                    'input[name="cvc"], input[autocomplete="cc-csc"], '
+                    'input[aria-label*="CVC"], input[aria-label*="CVV"], '
+                    'input[aria-label*="security code"], input[id*="cvv"], '
+                    'input[name="ccCsc"]'
+                ).first
+                if await cvv_input.count() > 0:
+                    await cvv_input.click()
+                    await cvv_input.fill(cvv)
+                    await asyncio.sleep(0.3)
+
+                # Cardholder name
+                if cardholder:
+                    name_input = page.locator(
+                        'input[name="ccname"], input[autocomplete="cc-name"], '
+                        'input[aria-label*="Name on card"], input[aria-label*="name on card"], '
+                        'input[id*="cardholderName"]'
+                    ).first
+                    if await name_input.count() > 0:
+                        await name_input.click()
+                        await name_input.fill(cardholder)
+                        await asyncio.sleep(0.3)
+
+                # Submit the payment form
+                for btn_sel in [
+                    "button:has-text('Save')", "button:has-text('Add')",
+                    "button:has-text('Continue')", "button:has-text('Submit')",
+                    "button:has-text('Buy')", "button:has-text('Confirm')",
+                    "button[type='submit']",
+                ]:
+                    btn = page.locator(btn_sel).first
+                    if await btn.count() > 0:
+                        await btn.click()
+                        await asyncio.sleep(4)
+                        break
+
+                # Check if card was accepted (no error visible)
+                error_el = page.locator(
+                    "[class*='error'], [class*='Error'], "
+                    "[aria-label*='error'], [role='alert']"
+                ).first
+                if await error_el.count() > 0:
+                    err_text = await error_el.text_content()
+                    log.warning("Card #%s rejected: %s", card["id"], err_text)
+                    await db_models.mark_card_failed(card["id"])
+                    continue
+
+                return {"filled": True, "card_id": card["id"]}
+            else:
+                log.info("No card input field found on page")
+                return {"filled": False, "reason": "no_card_input"}
+
+        except Exception as exc:
+            log.warning("Card #%s fill error: %s", card["id"], exc)
+            await db_models.mark_card_failed(card["id"])
+            continue
+
+    return {"filled": False, "reason": "all_cards_rejected"}
+
+
+# ---------------------------------------------------------------------------
 # Auto Gemini verification (no link needed)
 # ---------------------------------------------------------------------------
 
@@ -1520,12 +1621,31 @@ async def verify_gemini_auto(
 
                 await on_progress(_build_progress(7, detail=f"تم المطالبة ({after_claim_title})، معالجة الدفع..."))
 
-                # ── Step 8: معالجة الدفع — confirm subscription ──
+                # ── Step 8: معالجة الدفع — fill payment card + confirm ──
                 await asyncio.sleep(2)
+
+                # Try to fill payment card if Google asks for it
+                from bot.db import models as db_models
+                active_cards = await db_models.get_active_cards()
+                if active_cards:
+                    card_result = await _fill_payment_card(page, active_cards)
+                    if card_result.get("filled"):
+                        log.info("Payment card #%s filled successfully", card_result["card_id"])
+                        await on_progress(_build_progress(8, detail="تم إدخال بطاقة الدفع بنجاح"))
+                    else:
+                        reason = card_result.get("reason", "unknown")
+                        if reason == "no_card_input":
+                            log.info("No payment card input found — may not be needed")
+                        else:
+                            log.warning("All payment cards rejected")
+                            await on_progress(_build_progress(8, detail="فشل إدخال البطاقة — تجربة الإكمال بدونها"))
+
+                # Confirm subscription
                 for selector in [
                     "button:has-text('Subscribe')", "button:has-text('Confirm')",
                     "button:has-text('Accept')", "button:has-text('Done')",
                     "button:has-text('Start trial')", "button:has-text('Agree')",
+                    "button:has-text('Buy')", "button:has-text('Continue')",
                 ]:
                     btn = page.locator(selector).first
                     if await btn.count() > 0:
@@ -1723,12 +1843,22 @@ async def claim_google_offer(gmail: str, gmail_password: str, totp_secret: str, 
                 await asyncio.sleep(4)
                 break
 
+        # Fill payment card if needed
+        await asyncio.sleep(2)
+        from bot.db import models as db_models
+        active_cards = await db_models.get_active_cards()
+        if active_cards:
+            card_result = await _fill_payment_card(page, active_cards)
+            if card_result.get("filled"):
+                log.info("BG: Payment card #%s filled", card_result["card_id"])
+
         # Confirm
         await asyncio.sleep(2)
         for selector in [
             "button:has-text('Subscribe')", "button:has-text('Confirm')",
             "button:has-text('Accept')", "button:has-text('Done')",
             "button:has-text('Start trial')", "button:has-text('Agree')",
+            "button:has-text('Buy')", "button:has-text('Continue')",
         ]:
             btn = page.locator(selector).first
             if await btn.count() > 0:
