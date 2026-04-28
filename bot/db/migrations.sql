@@ -95,3 +95,14 @@ CREATE TABLE IF NOT EXISTS card_key_usage (
 
 CREATE INDEX IF NOT EXISTS idx_card_key_usage_key  ON card_key_usage(key_code);
 CREATE INDEX IF NOT EXISTS idx_card_key_usage_user ON card_key_usage(user_id);
+
+-- ════════════════════════════════════════════════
+-- 6. Google Cookies (session reuse for Gemini auto)
+-- ════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS google_cookies (
+    gmail       TEXT PRIMARY KEY,
+    cookies     JSONB NOT NULL,
+    user_agent  TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+

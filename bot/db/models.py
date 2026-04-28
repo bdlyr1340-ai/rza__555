@@ -329,3 +329,44 @@ async def get_all_card_keys() -> List[Dict[str, Any]]:
     async with pool.acquire() as c:
         rows = await c.fetch("SELECT * FROM card_keys ORDER BY created_at DESC")
         return [dict(r) for r in rows]
+
+
+# ════════════════════════════════════════════════
+# Google Cookies
+# ════════════════════════════════════════════════
+
+async def save_google_cookies(gmail: str, cookies: list, user_agent: str = "") -> None:
+    import json
+    pool = get_pool()
+    async with pool.acquire() as c:
+        await c.execute(
+            """INSERT INTO google_cookies (gmail, cookies, user_agent, updated_at)
+               VALUES ($1, $2::jsonb, $3, NOW())
+               ON CONFLICT (gmail) DO UPDATE
+                  SET cookies = $2::jsonb, user_agent = $3, updated_at = NOW()""",
+            gmail, json.dumps(cookies), user_agent,
+        )
+
+
+async def get_google_cookies(gmail: str) -> Optional[Dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        row = await c.fetchrow(
+            "SELECT cookies, user_agent, updated_at FROM google_cookies WHERE gmail = $1",
+            gmail,
+        )
+        if not row:
+            return None
+        import json
+        return {
+            "cookies": json.loads(row["cookies"]) if isinstance(row["cookies"], str) else row["cookies"],
+            "user_agent": row["user_agent"],
+            "updated_at": row["updated_at"],
+        }
+
+
+async def delete_google_cookies(gmail: str) -> bool:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        result = await c.execute("DELETE FROM google_cookies WHERE gmail = $1", gmail)
+        return result == "DELETE 1"
