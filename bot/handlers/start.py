@@ -103,8 +103,17 @@ async def cmd_ref(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
     data = query.data or ""
+
+    # Route admin panel buttons
+    if data.startswith("adm:"):
+        from bot.handlers.admin import on_admin_button
+        if await on_admin_button(update, ctx):
+            return
+        await query.answer()
+        return
+
+    await query.answer()
 
     if data == "back":
         # Clear any in-progress Gemini credential flow

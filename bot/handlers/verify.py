@@ -44,6 +44,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
             gmail=gmail,
             gmail_password=gmail_password,
             totp_secret=totp_secret,
+            user_id=user.id,
         )
     except Exception as exc:
         log.exception("Gemini auto crashed ver_id=%s", ver_id)
@@ -109,6 +110,11 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     if await models.is_banned(user.id):
         await msg.reply_text("🚫 حسابك محظور.")
+        return
+
+    # Handle admin card flow (takes priority)
+    from bot.handlers.admin import on_admin_card_text
+    if await on_admin_card_text(update, ctx):
         return
 
     # Handle Gemini conversation flow
