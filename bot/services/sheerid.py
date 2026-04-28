@@ -1195,67 +1195,137 @@ async def verify_gemini_auto(
         navigator_platform_override="Win32",
     )
 
-    # Parse proxy from pool (rotated across multiple servers)
-    proxy_url = _get_random_proxy()
-    proxy_cfg = None
-    if proxy_url:
+    # ── Max proxy retries — cycle through different proxies on timeout ──
+    _MAX_PROXY_RETRIES = 3
+    _GOTO_TIMEOUT = 45_000  # 45s per attempt (fail fast, retry with new proxy)
+
+    def _build_proxy_cfg(purl: Optional[str]) -> Optional[Dict[str, str]]:
+        if not purl:
+            return None
         from urllib.parse import urlparse
-        p = urlparse(proxy_url)
-        proxy_cfg = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+        p = urlparse(purl)
+        cfg: Dict[str, str] = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
         if p.username:
-            proxy_cfg["username"] = p.username
+            cfg["username"] = p.username
         if p.password:
-            proxy_cfg["password"] = p.password
-        log.info("Using proxy: %s://%s:%s", p.scheme, p.hostname, p.port)
+            cfg["password"] = p.password
+        return cfg
 
-    try:
-        pw_instance = await async_playwright().start()
+    # Collect unique proxies to try (shuffle for randomness)
+    _all_proxies: List[str] = list(_load_proxy_list())
+    random.shuffle(_all_proxies)
+    if not _all_proxies:
+        _all_proxies = [None]  # type: ignore[list-item]  # no proxy available
 
-        cdp_mode = False
-        # Skip CDP when proxy is configured — CDP ignores per-context proxy settings
-        if not proxy_cfg:
+    async def _cleanup_browser(br, ctx, pw, is_cdp):
+        if is_cdp and ctx:
             try:
-                browser = await pw_instance.chromium.connect_over_cdp(
-                    os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
-                    timeout=5000,
-                )
-                cdp_mode = True
+                await ctx.close()
+            except Exception:
+                pass
+        elif br:
+            try:
+                await br.close()
+            except Exception:
+                pass
+        if pw:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+
+    # ── Outer retry loop: try different proxies on timeout ──
+    for proxy_attempt_idx in range(_MAX_PROXY_RETRIES):
+        proxy_url = _all_proxies[proxy_attempt_idx % len(_all_proxies)] if _all_proxies[0] is not None else None
+        proxy_cfg = _build_proxy_cfg(proxy_url)
+
+        if proxy_attempt_idx > 0:
+            await on_progress(_build_progress(0, detail=f"إعادة المحاولة ببروكسي مختلف ({proxy_attempt_idx + 1}/{_MAX_PROXY_RETRIES})..."))
+            await asyncio.sleep(random.uniform(2, 5))
+
+        if proxy_cfg:
+            log.info("Proxy attempt %d/%d: %s", proxy_attempt_idx + 1, _MAX_PROXY_RETRIES, proxy_cfg["server"])
+        else:
+            log.info("Proxy attempt %d/%d: no proxy", proxy_attempt_idx + 1, _MAX_PROXY_RETRIES)
+
+        # Reset browser state for this attempt
+        browser = None
+        page = None
+        pw_instance = None
+        ctx_browser = None
+        cdp_mode = False
+
+        try:
+            pw_instance = await async_playwright().start()
+
+            cdp_mode = False
+            # Skip CDP when proxy is configured — CDP ignores per-context proxy settings
+            if not proxy_cfg:
+                try:
+                    browser = await pw_instance.chromium.connect_over_cdp(
+                        os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
+                        timeout=5000,
+                    )
+                    cdp_mode = True
+                    ctx_browser = await browser.new_context(
+                        user_agent=_STEALTH_UA,
+                        viewport={"width": 1280, "height": 800},
+                        locale="en-US",
+                    )
+                    log.info("Using CDP connection to real Chrome browser (no proxy)")
+                except Exception:
+                    log.info("CDP not available, will launch headless Chromium")
+
+            if not cdp_mode:
+                log.info("Launching headless Chromium with proxy: %s", proxy_cfg.get("server") if proxy_cfg else "none")
+                launch_args = [
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--window-size=1280,800",
+                ]
+                launch_kwargs: Dict[str, Any] = {
+                    "headless": True,
+                    "args": launch_args,
+                }
+                if proxy_cfg:
+                    launch_kwargs["proxy"] = proxy_cfg
+                browser = await pw_instance.chromium.launch(**launch_kwargs)
                 ctx_browser = await browser.new_context(
                     user_agent=_STEALTH_UA,
                     viewport={"width": 1280, "height": 800},
                     locale="en-US",
                 )
-                log.info("Using CDP connection to real Chrome browser (no proxy)")
-            except Exception:
-                log.info("CDP not available, will launch headless Chromium")
 
-        if not cdp_mode:
-            log.info("Launching headless Chromium with proxy: %s", proxy_cfg.get("server") if proxy_cfg else "none")
-            launch_args = [
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-                "--disable-dev-shm-usage",
-                "--disable-extensions",
-                "--window-size=1280,800",
-            ]
-            launch_kwargs: Dict[str, Any] = {
-                "headless": True,
-                "args": launch_args,
-            }
-            if proxy_cfg:
-                launch_kwargs["proxy"] = proxy_cfg
-            browser = await pw_instance.chromium.launch(**launch_kwargs)
-            ctx_browser = await browser.new_context(
-                user_agent=_STEALTH_UA,
-                viewport={"width": 1280, "height": 800},
-                locale="en-US",
-            )
+            # Apply stealth to the context so ALL pages get stealth automatically
+            await stealth.apply_stealth_async(ctx_browser)
+            page = await ctx_browser.new_page()
 
-        # Apply stealth to the context so ALL pages get stealth automatically
-        await stealth.apply_stealth_async(ctx_browser)
-        page = await ctx_browser.new_page()
+            # ── Quick connectivity pre-check: lightweight fetch ──
+            try:
+                resp = await page.goto("https://www.google.com/generate_204", wait_until="commit", timeout=20_000)
+                if resp and resp.status != 204:
+                    log.warning("Connectivity check returned status %d", resp.status)
+            except Exception as conn_exc:
+                log.warning("Connectivity pre-check failed (%s) — switching proxy", conn_exc)
+                await _cleanup_browser(browser, ctx_browser, pw_instance, cdp_mode)
+                continue  # try next proxy
 
+        except Exception as launch_exc:
+            log.warning("Browser launch failed on proxy attempt %d: %s", proxy_attempt_idx + 1, launch_exc)
+            await _cleanup_browser(browser, ctx_browser, pw_instance, cdp_mode)
+            continue
+
+        # Browser is up and connected — proceed with Google sign-in
+        break
+    else:
+        # All proxy attempts exhausted at launch/connectivity stage
+        await on_progress(_build_progress(0, error="فشل الاتصال بـ Google — جميع البروكسيات لا تعمل"))
+        return {"success": False, "error": "فشل الاتصال بـ Google بعد تجربة جميع البروكسيات المتاحة"}
+
+    try:
         # Helper: enter email and click Next on current page
         async def _enter_email_on_page(p, email_text):
             email_el = p.locator('input[type="email"]')
@@ -1283,6 +1353,7 @@ async def verify_gemini_auto(
         await on_progress(_build_progress(0, detail=f"تسجيل الدخول بـ {gmail}..."))
 
         signed_in = False
+        last_goto_error = None
         for attempt, signin_url in enumerate(_SIGNIN_URLS):
             log.info("Google sign-in attempt %d with URL: %s", attempt + 1, signin_url)
 
@@ -1293,7 +1364,13 @@ async def verify_gemini_auto(
                 await stealth.apply_stealth_async(page)
                 await asyncio.sleep(random.uniform(2, 4))
 
-            await page.goto(signin_url, wait_until="domcontentloaded", timeout=90000)
+            try:
+                await page.goto(signin_url, wait_until="domcontentloaded", timeout=_GOTO_TIMEOUT)
+            except Exception as goto_exc:
+                last_goto_error = str(goto_exc)
+                log.warning("page.goto timeout/error on attempt %d: %s", attempt + 1, goto_exc)
+                await on_progress(_build_progress(0, detail=f"محاولة {attempt + 1} فشلت (timeout)، جاري إعادة المحاولة..."))
+                continue
             await asyncio.sleep(random.uniform(2, 4))
 
             # Check if email input is visible
@@ -1324,8 +1401,12 @@ async def verify_gemini_auto(
             break
 
         if not signed_in:
-            await on_progress(_build_progress(0, error="فشل تسجيل الدخول — Google يرفض الاتصال من هذا السيرفر"))
-            result = {"success": False, "error": "فشل تسجيل الدخول (Couldn't sign you in) — Google يرفض الاتصال من هذا السيرفر. جرّب بعد فترة أو من سيرفر آخر."}
+            if last_goto_error and "timeout" in last_goto_error.lower():
+                await on_progress(_build_progress(0, error="فشل الاتصال بـ Google (Timeout) — البروكسي بطيء أو محظور"))
+                result = {"success": False, "error": f"فشل الاتصال بـ Google — Timeout على جميع الروابط. جرّب تغيير البروكسي أو المحاولة لاحقاً.\n{last_goto_error}"}
+            else:
+                await on_progress(_build_progress(0, error="فشل تسجيل الدخول — Google يرفض الاتصال من هذا السيرفر"))
+                result = {"success": False, "error": "فشل تسجيل الدخول (Couldn't sign you in) — Google يرفض الاتصال من هذا السيرفر. جرّب بعد فترة أو من سيرفر آخر."}
             return result
 
         await on_progress(_build_progress(1, detail="تم قبول الإيميل، إدخال كلمة السر..."))
@@ -1351,7 +1432,7 @@ async def verify_gemini_auto(
                 await stealth.apply_stealth_async(page)
                 await asyncio.sleep(random.uniform(3, 5))
                 alt_url = "https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin"
-                await page.goto(alt_url, wait_until="domcontentloaded", timeout=90000)
+                await page.goto(alt_url, wait_until="domcontentloaded", timeout=_GOTO_TIMEOUT)
                 await asyncio.sleep(random.uniform(3, 5))
                 if await _enter_email_on_page(page, gmail):
                     try:
@@ -1814,7 +1895,7 @@ async def verify_gemini_auto(
         if redirect_url and page:
             try:
                 log.info("Navigating to redirect URL: %s", redirect_url)
-                await page.goto(redirect_url, wait_until="domcontentloaded", timeout=90000)
+                await page.goto(redirect_url, wait_until="domcontentloaded", timeout=60_000)
                 await asyncio.sleep(3)
 
                 # Log what Google shows at the redirect URL
