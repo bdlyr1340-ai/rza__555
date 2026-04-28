@@ -1,27 +1,42 @@
-"""تحميل إعدادات البوت من المتغيرات البيئية."""
+"""Merged bot configuration — all values from environment variables."""
 from __future__ import annotations
 
 import os
-from typing import List
+import sys
 
 
-def _parse_admin_ids(raw: str) -> List[int]:
-    if not raw:
-        return []
-    out: List[int] = []
-    for part in raw.replace(";", ",").split(","):
-        part = part.strip()
-        if part.isdigit():
-            out.append(int(part))
-    return out
+def _int_list(raw: str) -> list[int]:
+    return [int(x) for x in raw.split(",") if x.strip().isdigit()]
 
 
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_IDS: List[int] = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
-DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
-DEFAULT_CREDITS: int = int(os.getenv("DEFAULT_CREDITS", "3"))
-REFERRAL_BONUS: int = int(os.getenv("REFERRAL_BONUS", "5"))
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+# ── Telegram ──
+BOT_TOKEN: str = os.environ.get("BOT_TOKEN", "")
+ADMIN_IDS: list[int] = _int_list(os.environ.get("ADMIN_IDS", ""))
+CHANNEL_USERNAME: str = os.environ.get("CHANNEL_USERNAME", "")
+CHANNEL_URL: str = os.environ.get("CHANNEL_URL", "")
+
+# ── Database (PostgreSQL on Railway) ──
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
+
+# ── Credits / Points ──
+DEFAULT_CREDITS: int = int(os.environ.get("DEFAULT_CREDITS", "3"))
+VERIFY_COST: int = int(os.environ.get("VERIFY_COST", "1"))
+CHECKIN_REWARD: int = int(os.environ.get("CHECKIN_REWARD", "1"))
+REFERRAL_BONUS: int = int(os.environ.get("REFERRAL_BONUS", "2"))
+REGISTER_REWARD: int = int(os.environ.get("REGISTER_REWARD", "1"))
+
+# ── Proxy ──
+PROXY_URL: str = os.environ.get("PROXY_URL", "")
+PROXY_LIST: str = os.environ.get("PROXY_LIST", "")
+
+# ── Logging ──
+LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
+
+# ── Help ──
+HELP_NOTION_URL: str = os.environ.get(
+    "HELP_NOTION_URL",
+    "https://rhetorical-era-3f3.notion.site/dd78531dbac745af9bbac156b51da9cc",
+)
 
 
 def validate() -> None:
@@ -30,5 +45,8 @@ def validate() -> None:
         missing.append("BOT_TOKEN")
     if not DATABASE_URL:
         missing.append("DATABASE_URL")
+    if not ADMIN_IDS:
+        missing.append("ADMIN_IDS")
     if missing:
-        raise SystemExit("❌ المتغيرات البيئية التالية مفقودة: " + ", ".join(missing))
+        print(f"[FATAL] Missing env vars: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)

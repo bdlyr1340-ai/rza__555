@@ -1,4 +1,4 @@
-"""نقطة تشغيل بوت تيليجرام — long polling."""
+"""Merged Telegram bot — long polling entry point."""
 from __future__ import annotations
 
 import logging
@@ -33,10 +33,9 @@ def _setup_logging() -> None:
 
 async def _post_init(app: Application) -> None:
     await init_pool()
-    # مهم جداً حتى لا يبقى Webhook قديم يمنع الـ polling
     await app.bot.delete_webhook(drop_pending_updates=True)
     me = await app.bot.get_me()
-    log.info("Telegram bot connected: @%s", me.username)
+    log.info("Bot connected: @%s", me.username)
     log.info("Polling is active")
 
 
@@ -49,7 +48,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("%s", "".join(traceback.format_exception(None, ctx.error, ctx.error.__traceback__)))
     try:
         if isinstance(update, Update) and update.effective_message:
-            await update.effective_message.reply_text("صار خطأ مؤقت، جرّب /start مرة ثانية.")
+            await update.effective_message.reply_text("حدث خطأ مؤقت، جرّب /start مرة ثانية.")
     except Exception:
         pass
 
@@ -62,31 +61,46 @@ def build_app() -> Application:
         .token(config.BOT_TOKEN)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
+        .concurrent_updates(True)
         .build()
     )
 
-    # أوامر المستخدم
+    # ── User commands ──
     app.add_handler(CommandHandler("start", h_start.cmd_start))
     app.add_handler(CommandHandler("ping", h_start.cmd_ping))
     app.add_handler(CommandHandler("help", h_start.cmd_help))
     app.add_handler(CommandHandler("me", h_start.cmd_me))
     app.add_handler(CommandHandler("ref", h_start.cmd_ref))
+    app.add_handler(CommandHandler("qd", h_start.cmd_qd))
+    app.add_handler(CommandHandler("use", h_start.cmd_use))
 
-    # أوامر الأدمن
+    # ── Verification commands (bot1-style) ──
+    app.add_handler(CommandHandler("verify", h_verify.cmd_verify))
+    app.add_handler(CommandHandler("verify2", h_verify.cmd_verify2))
+    app.add_handler(CommandHandler("verify3", h_verify.cmd_verify3))
+    app.add_handler(CommandHandler("verify4", h_verify.cmd_verify4))
+    app.add_handler(CommandHandler("verify5", h_verify.cmd_verify5))
+    app.add_handler(CommandHandler("getV4Code", h_verify.cmd_getV4Code))
+
+    # ── Admin commands ──
     app.add_handler(CommandHandler("admin", h_admin.cmd_admin))
     app.add_handler(CommandHandler("stats", h_admin.cmd_stats))
     app.add_handler(CommandHandler("addcredit", h_admin.cmd_addcredit))
     app.add_handler(CommandHandler("ban", h_admin.cmd_ban))
     app.add_handler(CommandHandler("unban", h_admin.cmd_unban))
+    app.add_handler(CommandHandler("blacklist", h_admin.cmd_blacklist))
     app.add_handler(CommandHandler("broadcast", h_admin.cmd_broadcast))
+    app.add_handler(CommandHandler("genkey", h_admin.cmd_genkey))
+    app.add_handler(CommandHandler("listkeys", h_admin.cmd_listkeys))
     app.add_handler(CommandHandler("addcard", h_admin.cmd_addcard))
     app.add_handler(CommandHandler("cards", h_admin.cmd_cards))
     app.add_handler(CommandHandler("delcard", h_admin.cmd_delcard))
 
-    # أزرار ورسائل
+    # ── Buttons & text ──
     app.add_handler(CallbackQueryHandler(h_start.on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, h_verify.on_text))
     app.add_error_handler(on_error)
+
     return app
 
 
