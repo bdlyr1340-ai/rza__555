@@ -1176,7 +1176,8 @@ async def verify_gemini_auto(
                         "li:has-text('verification code'), "
                         "li:has-text('code from'), "
                         "li:has-text('authenticator app'), "
-                        "div:has-text('Enter a code') >> xpath=ancestor::li"
+                        "li:has-text('Enter a code'), "
+                        "li:has-text('security code')"
                     )
                     if await auth_option.count() > 0:
                         auth_text = await auth_option.first.text_content()
@@ -1246,8 +1247,8 @@ async def verify_gemini_auto(
                         "li:has-text('code from'), "
                         "li:has-text('authenticator app'), "
                         "li:has-text('security code'), "
-                        "div:has-text('Enter a code') >> xpath=ancestor::li, "
-                        "div:has-text('Get a verification code') >> xpath=ancestor::li"
+                        "li:has-text('Enter a code'), "
+                        "li:has-text('Get a verification code')"
                     )
                     if await auth_option_direct.count() > 0:
                         auth_text = await auth_option_direct.first.text_content()
