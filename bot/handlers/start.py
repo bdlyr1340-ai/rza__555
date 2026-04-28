@@ -6,7 +6,11 @@ import json
 import logging
 import time
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import (
+    InlineKeyboardButton, InlineKeyboardMarkup,
+    KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    Update, WebAppInfo,
+)
 from telegram.ext import ContextTypes
 
 from bot import config
@@ -200,13 +204,15 @@ async def cmd_pixel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             reply_markup=back_menu(),
         )
         return
-    webapp_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(
+    # Must use KeyboardButton (reply keyboard) for sendData to work
+    webapp_kb = ReplyKeyboardMarkup(
+        [[KeyboardButton(
             "⚡ فتح نموذج التفعيل",
             web_app=WebAppInfo(url=config.WEBAPP_URL),
-        )],
-        [InlineKeyboardButton("⬅️ رجوع", callback_data="back")],
-    ])
+        )]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
     await update.effective_message.reply_text(
         "🤖 *Google One / Gemini Pro — تفعيل تلقائي*\n\n"
         "اضغط الزر أدناه لإدخال بيانات حساب Google:",
@@ -305,8 +311,10 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     ver_id = await models.log_verification_start(user.id, "google_one", "auto-pixel")
     start_time = time.time()
 
+    # Remove reply keyboard and show progress
     progress_msg = await msg.reply_text(
         _build_pixel_progress(gmail, 0, 0),
+        reply_markup=ReplyKeyboardRemove(),
     )
 
     _current_step = 0
@@ -517,17 +525,22 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             _clear_gemini_state(ctx)
             ctx.user_data.pop("pending_service", None)
-            webapp_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(
+            # Must use KeyboardButton (reply keyboard) for sendData to work
+            webapp_kb = ReplyKeyboardMarkup(
+                [[KeyboardButton(
                     "⚡ فتح نموذج التفعيل",
                     web_app=WebAppInfo(url=config.WEBAPP_URL),
-                )],
-                [InlineKeyboardButton("⬅️ رجوع", callback_data="back")],
-            ])
+                )]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
             await query.edit_message_text(
                 "🤖 *Google One / Gemini Pro — تفعيل تلقائي*\n\n"
                 "اضغط الزر أدناه لإدخال بيانات حساب Google:",
                 parse_mode="Markdown",
+            )
+            await query.message.reply_text(
+                "👇 اضغط الزر:",
                 reply_markup=webapp_kb,
             )
             return
