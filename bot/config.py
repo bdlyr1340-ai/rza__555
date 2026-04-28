@@ -29,6 +29,18 @@ REGISTER_REWARD: int = int(os.environ.get("REGISTER_REWARD", "1"))
 PROXY_URL: str = os.environ.get("PROXY_URL", "")
 PROXY_LIST: str = os.environ.get("PROXY_LIST", "")
 
+# ── Cloud Browser (BrowserBase / Browserless) ──
+# Set BROWSER_PROVIDER to "browserbase" or "browserless" to use cloud browsers
+# instead of local Chromium. Falls back to local if not set.
+BROWSER_PROVIDER: str = os.environ.get("BROWSER_PROVIDER", "")  # "browserbase" | "browserless" | ""
+BROWSERBASE_API_KEY: str = os.environ.get("BROWSERBASE_API_KEY", "")
+BROWSERBASE_PROJECT_ID: str = os.environ.get("BROWSERBASE_PROJECT_ID", "")
+BROWSERLESS_TOKEN: str = os.environ.get("BROWSERLESS_TOKEN", "")
+BROWSERLESS_URL: str = os.environ.get("BROWSERLESS_URL", "wss://chrome.browserless.io")
+
+# ── WebApp ──
+WEBAPP_URL: str = os.environ.get("WEBAPP_URL", "https://webapp-amfovjji.devinapps.com")
+
 # ── Logging ──
 LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
 

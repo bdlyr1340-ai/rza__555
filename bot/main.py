@@ -96,6 +96,10 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("cards", h_admin.cmd_cards))
     app.add_handler(CommandHandler("delcard", h_admin.cmd_delcard))
 
+    # ── Pixel (WebApp) ──
+    app.add_handler(CommandHandler("pixel", h_start.cmd_pixel))
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, h_start.on_webapp_data))
+
     # ── Buttons & text ──
     app.add_handler(CallbackQueryHandler(h_start.on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, h_verify.on_text))
