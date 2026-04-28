@@ -1211,25 +1211,26 @@ async def verify_gemini_auto(
     try:
         pw_instance = await async_playwright().start()
 
-        # Try CDP connection to real Chrome first (avoids Google bot detection)
-        try:
-            browser = await pw_instance.chromium.connect_over_cdp(
-                os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
-                timeout=5000,
-            )
-            cdp_mode = True
-            ctx_opts: Dict[str, Any] = {
-                "user_agent": _STEALTH_UA,
-                "viewport": {"width": 1280, "height": 800},
-                "locale": "en-US",
-            }
-            if proxy_cfg:
-                ctx_opts["proxy"] = proxy_cfg
-            ctx_browser = await browser.new_context(**ctx_opts)
-            log.info("Using CDP connection to real Chrome browser (fresh context)")
-        except Exception:
-            cdp_mode = False
-            log.info("CDP not available, launching headless Chromium")
+        cdp_mode = False
+        # Skip CDP when proxy is configured — CDP ignores per-context proxy settings
+        if not proxy_cfg:
+            try:
+                browser = await pw_instance.chromium.connect_over_cdp(
+                    os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
+                    timeout=5000,
+                )
+                cdp_mode = True
+                ctx_browser = await browser.new_context(
+                    user_agent=_STEALTH_UA,
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                )
+                log.info("Using CDP connection to real Chrome browser (no proxy)")
+            except Exception:
+                log.info("CDP not available, will launch headless Chromium")
+
+        if not cdp_mode:
+            log.info("Launching headless Chromium with proxy: %s", proxy_cfg.get("server") if proxy_cfg else "none")
             launch_args = [
                 "--no-sandbox",
                 "--disable-blink-features=AutomationControlled",
