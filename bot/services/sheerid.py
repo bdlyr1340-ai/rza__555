@@ -1353,9 +1353,9 @@ async def verify_gemini_auto(
             if final_step == "success" and redirect_url:
                 await on_progress(_build_progress(6, detail="تم التحقق بنجاح! المطالبة بالعرض..."))
             elif final_step in ("docReview", "pending"):
-                # Poll SheerID until verification is approved or rejected (max 2 minutes)
+                # Poll SheerID until verification is approved or rejected (max 5 minutes)
                 await on_progress(_build_progress(6, detail=f"التحقق قيد المراجعة ({final_step})... انتظار الموافقة"))
-                max_polls = 12
+                max_polls = 30
                 poll_interval = 10
                 for poll_i in range(max_polls):
                     await asyncio.sleep(poll_interval)
@@ -1381,7 +1381,7 @@ async def verify_gemini_auto(
                 else:
                     # Timed out waiting for approval — return failure so credit is refunded
                     await on_progress(_build_progress(6, error="انتهت مهلة الانتظار — التحقق لا زال قيد المراجعة"))
-                    result = {"success": False, "error": f"SheerID لم يوافق خلال دقيقتين (الحالة: {final_step}) — جرّب مرة أخرى"}
+                    result = {"success": False, "error": f"SheerID لم يوافق خلال 5 دقائق (الحالة: {final_step}) — جرّب مرة أخرى"}
                     return result
             elif final_step == "error":
                 err_ids = data.get("errorIds", [])
