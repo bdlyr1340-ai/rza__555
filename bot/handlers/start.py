@@ -1,7 +1,8 @@
-"""أمر /start والقائمة الرئيسية."""
+"""Merged /start handler, main menu, and button routing."""
 from __future__ import annotations
 
 import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -15,8 +16,7 @@ log = logging.getLogger(__name__)
 
 WELCOME_TEXT = (
     "👋 *أهلاً بيك بالبوت*\n\n"
-    "اختر الخدمة المطلوبة من الأزرار بالأسفل.\n"
-    "وتگدر ترسل الرابط بعد اختيار الخدمة حتى ينحفظ طلبك بقاعدة البيانات.\n\n"
+    "اختر الخدمة المطلوبة من الأزرار بالأسفل.\n\n"
     "💎 *رصيدك الحالي:* `{credits}`\n"
 )
 
@@ -24,18 +24,26 @@ HELP_TEXT = (
     "📖 *دليل الاستخدام*\n\n"
     "• اضغط على الخدمة من الأزرار.\n"
     "• أرسل الرابط بعدها برسالة عادية.\n"
-    "• البوت يحفظ الطلب ويربطه بحسابك وقاعدة البيانات.\n\n"
+    "• البوت يحفظ الطلب ويربطه بحسابك.\n\n"
     "*الأوامر:*\n"
     "/start — القائمة الرئيسية\n"
     "/ping — فحص استجابة البوت\n"
     "/me — حسابي ورصيدي\n"
     "/ref — رابط الدعوة\n"
-    "/help — المساعدة"
+    "/qd — تسجيل حضور يومي\n"
+    "/use `<كود>` — استخدام كود تفعيل\n"
+    "/help — المساعدة\n\n"
+    "*أوامر التحقق:*\n"
+    "/verify `<رابط>` — Google One / Gemini\n"
+    "/verify2 `<رابط>` — ChatGPT K12\n"
+    "/verify3 `<رابط>` — Spotify Student\n"
+    "/verify4 `<رابط>` — Bolt.new Teacher\n"
+    "/verify5 `<رابط>` — YouTube Student\n"
+    "/getV4Code `<id>` — كود Bolt.new\n"
 )
 
 
 def _clear_gemini_state(ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clear any in-progress Gemini credential flow state."""
     for k in ("gemini_flow", "gemini_email", "gemini_password", "gemini_2fa"):
         ctx.user_data.pop(k, None)
 
@@ -48,6 +56,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     referred_by = None
     if args and args[0].startswith("ref_") and args[0][4:].isdigit():
         referred_by = int(args[0][4:])
+    elif args and args[0].isdigit():
+        referred_by = int(args[0])
 
     row = await models.upsert_user(
         user_id=user.id,
@@ -70,7 +80,25 @@ async def cmd_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_markdown(HELP_TEXT, reply_markup=back_menu())
+    is_admin = update.effective_user.id in config.ADMIN_IDS
+    text = HELP_TEXT
+    if is_admin:
+        text += (
+            "\n*أوامر الأدمن:*\n"
+            "/admin — لوحة التحكم\n"
+            "/stats — الإحصائيات\n"
+            "/addcredit `<user_id> <amount>` — إضافة رصيد\n"
+            "/ban `<user_id>` — حظر\n"
+            "/unban `<user_id>` — رفع الحظر\n"
+            "/blacklist — قائمة المحظورين\n"
+            "/broadcast `<رسالة>` — بث رسالة\n"
+            "/genkey `<كود> <رصيد> [عدد] [أيام]` — إنشاء كود\n"
+            "/listkeys — عرض الأكواد\n"
+            "/addcard — إضافة بطاقة ائتمان\n"
+            "/cards — عرض البطاقات\n"
+            "/delcard `<id>` — حذف بطاقة\n"
+        )
+    await update.effective_message.reply_markdown(text, reply_markup=back_menu())
 
 
 async def cmd_me(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -101,11 +129,62 @@ async def cmd_ref(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_markdown(text, reply_markup=back_menu())
 
 
+async def cmd_qd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if await models.is_banned(user.id):
+        await update.effective_message.reply_text("🚫 حسابك محظور.")
+        return
+    row = await models.get_user(user.id)
+    if not row:
+        await update.effective_message.reply_text("اضغط /start أولاً.")
+        return
+    if await models.checkin(user.id):
+        row = await models.get_user(user.id)
+        await update.effective_message.reply_text(
+            f"✅ تم تسجيل الحضور!\n+{config.CHECKIN_REWARD} رصيد\nرصيدك الحالي: {row['credits']}"
+        )
+    else:
+        await update.effective_message.reply_text("❌ سجّلت حضورك اليوم مسبقاً. ارجع بكرة!")
+
+
+async def cmd_use(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if await models.is_banned(user.id):
+        await update.effective_message.reply_text("🚫 حسابك محظور.")
+        return
+    row = await models.get_user(user.id)
+    if not row:
+        await update.effective_message.reply_text("اضغط /start أولاً.")
+        return
+    args = ctx.args or []
+    if not args:
+        await update.effective_message.reply_text("الاستخدام: /use <كود التفعيل>")
+        return
+
+    key_code = args[0].strip()
+    result = await models.use_card_key(key_code, user.id)
+
+    if result is None:
+        await update.effective_message.reply_text("❌ الكود غير موجود.")
+    elif result == -1:
+        await update.effective_message.reply_text("❌ الكود مستنفد (وصل لعدد الاستخدامات).")
+    elif result == -2:
+        await update.effective_message.reply_text("❌ الكود منتهي الصلاحية.")
+    elif result == -3:
+        await update.effective_message.reply_text("❌ استخدمت هذا الكود مسبقاً.")
+    else:
+        row = await models.get_user(user.id)
+        await update.effective_message.reply_text(
+            f"✅ تم! حصلت على +{result} رصيد.\nرصيدك الحالي: {row['credits']}"
+        )
+
+
+# ────────────── Inline button handler ──────────────
+
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     data = query.data or ""
 
-    # Route admin panel buttons
     if data.startswith("adm:"):
         from bot.handlers.admin import on_admin_button
         if await on_admin_button(update, ctx):
@@ -116,9 +195,8 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
 
     if data == "back":
-        # Clear any in-progress Gemini credential flow
-        for k in ("gemini_flow", "gemini_email", "gemini_password", "gemini_2fa"):
-            ctx.user_data.pop(k, None)
+        _clear_gemini_state(ctx)
+        ctx.user_data.pop("pending_service", None)
         row = await models.get_user(query.from_user.id) or {"credits": 0}
         await query.edit_message_text(
             WELCOME_TEXT.format(credits=row.get("credits", 0)),
@@ -134,12 +212,15 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if data == "me":
         row = await models.get_user(query.from_user.id)
         if not row:
-            row = await models.upsert_user(query.from_user.id, query.from_user.username, query.from_user.first_name)
+            row = await models.upsert_user(
+                query.from_user.id, query.from_user.username, query.from_user.first_name
+            )
         text = (
             "👤 *حسابي*\n\n"
             f"• المعرّف: `{row.get('user_id')}`\n"
             f"• الرصيد: *{row.get('credits', 0)}*\n"
-            f"• الناجحة / الإجمالي: {row.get('successful_verifications', 0)} / {row.get('total_verifications', 0)}\n"
+            f"• الناجحة / الإجمالي: "
+            f"{row.get('successful_verifications', 0)} / {row.get('total_verifications', 0)}\n"
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_menu())
         return
@@ -148,7 +229,31 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         me = await ctx.bot.get_me()
         link = f"https://t.me/{me.username}?start=ref_{query.from_user.id}"
         await query.edit_message_text(
-            f"🎁 *رابط الدعوة*\n\nشارك:\n`{link}`\n\nكل صديق يبدأ البوت = *+{config.REFERRAL_BONUS} رصيد*",
+            f"🎁 *رابط الدعوة*\n\nشارك:\n`{link}`\n\n"
+            f"كل صديق يبدأ البوت = *+{config.REFERRAL_BONUS} رصيد*",
+            parse_mode="Markdown",
+            reply_markup=back_menu(),
+        )
+        return
+
+    if data == "checkin":
+        uid = query.from_user.id
+        if await models.is_banned(uid):
+            await query.edit_message_text("🚫 حسابك محظور.", reply_markup=back_menu())
+            return
+        if await models.checkin(uid):
+            row = await models.get_user(uid)
+            await query.edit_message_text(
+                f"✅ تم تسجيل الحضور!\n+{config.CHECKIN_REWARD} رصيد\nرصيدك: {row['credits']}",
+                reply_markup=back_menu(),
+            )
+        else:
+            await query.edit_message_text("❌ سجّلت حضورك اليوم مسبقاً!", reply_markup=back_menu())
+        return
+
+    if data == "usekey":
+        await query.edit_message_text(
+            "🔑 أرسل الأمر:\n`/use <كود التفعيل>`",
             parse_mode="Markdown",
             reply_markup=back_menu(),
         )
@@ -161,24 +266,20 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await query.edit_message_text("❌ خدمة غير معروفة.", reply_markup=back_menu())
             return
 
-        # Auto-verify for Google One / Gemini — start conversation to collect credentials
         if key == "google_one":
             user = query.from_user
             if await models.is_banned(user.id):
                 await query.edit_message_text("🚫 حسابك محظور.", reply_markup=back_menu())
                 return
-
             row = await models.get_user(user.id)
             if not row:
                 row = await models.upsert_user(user.id, user.username, user.first_name)
             if row["credits"] <= 0:
                 await query.edit_message_text(
-                    "⚠️ رصيدك منتهي! ادعُ أصدقاء عبر /ref حتى تحصل على رصيد إضافي.",
+                    "⚠️ رصيدك منتهي! ادعُ أصدقاء عبر /ref.",
                     reply_markup=back_menu(),
                 )
                 return
-
-            # Start conversation — ask for email first
             ctx.user_data.pop("pending_service", None)
             ctx.user_data["gemini_flow"] = "email"
             await query.edit_message_text(
@@ -194,7 +295,7 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await query.edit_message_text(
             f"✅ اخترت: *{meta['label']}*\n\n"
             f"_{meta['description']}_\n\n"
-            "📨 الآن أرسل الرابط برسالة عادية حتى ينحفظ طلبك.",
+            "📨 الآن أرسل الرابط برسالة عادية.",
             parse_mode="Markdown",
             reply_markup=back_menu(),
         )

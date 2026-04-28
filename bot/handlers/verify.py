@@ -1,9 +1,11 @@
-"""معالجة رسائل الروابط وتشغيل التحقق الفعلي عبر SheerID."""
+"""Merged verification handler — URL-based + command-based + Gemini auto."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
+import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -16,8 +18,11 @@ from bot.utils.keyboards import back_menu, main_menu
 log = logging.getLogger(__name__)
 
 
+# ════════════════════════════════════════════════
+# Gemini auto-flow (credentials conversation)
+# ════════════════════════════════════════════════
+
 async def _run_gemini_flow(msg, ctx, user) -> None:
-    """Execute the full Gemini auto-verification after all credentials collected."""
     gmail = ctx.user_data.pop("gemini_email", "")
     gmail_password = ctx.user_data.pop("gemini_password", "")
     totp_secret = ctx.user_data.pop("gemini_2fa", "")
@@ -60,7 +65,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
         await models.log_verification_finish(ver_id, user.id, success=True)
         sheerid_step = result.get("step", "pending")
         reply = (
-            "🎉 *تهانياً تم تفعيل جيمناي برو سنوي!*\n\n"
+            "🎉 *تم التحقق بنجاح!*\n\n"
             f"📧 Gmail: `{result.get('gmail', '—')}`\n"
             f"👤 الشخص: `{result.get('student', '—')}`\n"
             f"🎓 الجامعة: `{result.get('school', '—')}`\n"
@@ -84,8 +89,6 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
         extra_lines += f"حالة SheerID: {result['step']}\n"
     if result.get("verificationId"):
         extra_lines += f"رقم التحقق: {result['verificationId']}\n"
-    if result.get("redirect"):
-        extra_lines += f"رابط العرض: {result['redirect'][:80]}\n"
     admin_text = (
         "📥 طلب تحقق جديد (تلقائي)\n\n"
         f"المستخدم: {user.id}\n"
@@ -102,6 +105,10 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
             log.warning("Failed to notify admin %s: %s", admin_id, e)
 
 
+# ════════════════════════════════════════════════
+# Text message handler (URL-based + Gemini creds)
+# ════════════════════════════════════════════════
+
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg or not msg.text:
@@ -112,12 +119,10 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text("🚫 حسابك محظور.")
         return
 
-    # Handle admin card flow (takes priority)
     from bot.handlers.admin import on_admin_card_text
     if await on_admin_card_text(update, ctx):
         return
 
-    # Handle Gemini conversation flow
     gemini_step = ctx.user_data.get("gemini_flow")
     if gemini_step:
         text = msg.text.strip()
@@ -129,11 +134,9 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             ctx.user_data["gemini_email"] = text
             ctx.user_data["gemini_flow"] = "password"
             await msg.reply_text(
-                f"✅ الإيميل: `{text}`\n\n"
-                "🔑 *الخطوة 2/3:* أرسل كلمة مرور حساب Google:",
+                f"✅ الإيميل: `{text}`\n\n🔑 *الخطوة 2/3:* أرسل كلمة مرور حساب Google:",
                 parse_mode="Markdown",
             )
-            # Delete the email message for privacy
             try:
                 await msg.delete()
             except Exception:
@@ -146,12 +149,10 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await msg.reply_text(
                 "✅ تم حفظ كلمة المرور\n\n"
                 "🔐 *الخطوة 3/3:* أرسل مفتاح 2FA السري (Secret Key):\n\n"
-                "المفتاح يكون نص مثل: `JBSWY3DPEHPK3PXP`\n"
-                "تلاقيه في إعدادات Google Authenticator\n\n"
+                "المفتاح يكون نص مثل: `JBSWY3DPEHPK3PXP`\n\n"
                 "_إذا ما عندك 2FA أرسل: skip_",
                 parse_mode="Markdown",
             )
-            # Delete the password message for privacy
             try:
                 await msg.delete()
             except Exception:
@@ -161,19 +162,17 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if gemini_step == "2fa":
             totp_secret = text.strip() if text.lower() != "skip" else ""
             ctx.user_data["gemini_2fa"] = totp_secret
-            # Delete the 2FA message for privacy
             try:
                 await msg.delete()
             except Exception:
                 pass
-            # All credentials collected — run the flow
             await _run_gemini_flow(msg, ctx, user)
             return
 
     url = extract_sheerid_url(msg.text)
     if not url:
         await msg.reply_text(
-            "ℹ️ أرسل الرابط الصحيح أو اضغط /start حتى تظهر الأزرار.",
+            "ℹ️ أرسل الرابط الصحيح أو اضغط /start.",
             reply_markup=main_menu(),
         )
         return
@@ -183,7 +182,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     service_key = pending or url_service
     if not service_key or service_key not in SERVICE_REGISTRY:
         await msg.reply_text(
-            "❓ ما گدرت أحدد نوع الخدمة من الرابط. اختار الخدمة من القائمة:",
+            "❓ ما گدرت أحدد نوع الخدمة. اختار من القائمة:",
             reply_markup=main_menu(),
         )
         return
@@ -194,13 +193,13 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     if row["credits"] <= 0:
         await msg.reply_text(
-            "⚠️ رصيدك منتهي! ادعُ أصدقاء عبر /ref حتى تحصل على رصيد إضافي.",
+            "⚠️ رصيدك منتهي! ادعُ أصدقاء عبر /ref.",
             reply_markup=back_menu(),
         )
         return
 
     if not await models.deduct_credit(user.id):
-        await msg.reply_text("⚠️ لم يتم خصم الرصيد، حاول مرة ثانية.", reply_markup=back_menu())
+        await msg.reply_text("⚠️ لم يتم خصم الرصيد.", reply_markup=back_menu())
         return
 
     meta = SERVICE_REGISTRY[service_key]
@@ -214,11 +213,11 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         result = await run_verification(service_key, url)
     except Exception as exc:
-        log.exception("Verification crashed for ver_id=%s", ver_id)
+        log.exception("Verification crashed ver_id=%s", ver_id)
         await models.log_verification_finish(ver_id, user.id, success=False, error=str(exc))
         await models.add_credits(user.id, 1)
         await msg.reply_text(
-            f"❌ حدث خطأ أثناء التحقق:\n{exc}\n\nتم إرجاع الرصيد.",
+            f"❌ حدث خطأ:\n{exc}\n\nتم إرجاع الرصيد.",
             reply_markup=main_menu(),
         )
         return
@@ -235,8 +234,10 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         school = result.get("school")
         if school:
             reply += f"الجامعة/المدرسة: {school}\n"
+        code = result.get("rewardCode")
+        if code:
+            reply += f"🎁 كود التفعيل: `{code}`\n"
         reply += f"\nالحالة: {result.get('step', 'pending')}\n"
-        reply += "\n⏳ انتظر 24-48 ساعة للمراجعة."
         await msg.reply_markdown(reply, reply_markup=main_menu())
     else:
         await models.log_verification_finish(ver_id, user.id, success=False, error=result.get("error"))
@@ -260,3 +261,167 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await ctx.bot.send_message(admin_id, admin_text)
         except Exception as e:
             log.warning("Failed to notify admin %s: %s", admin_id, e)
+
+
+# ════════════════════════════════════════════════
+# Command-based verifications (from bot1)
+# ════════════════════════════════════════════════
+
+async def _cmd_verify_generic(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+    service_key: str, label: str,
+) -> None:
+    user = update.effective_user
+    if await models.is_banned(user.id):
+        await update.effective_message.reply_text("🚫 حسابك محظور.")
+        return
+
+    row = await models.get_user(user.id)
+    if not row:
+        await update.effective_message.reply_text("اضغط /start أولاً.")
+        return
+
+    args = ctx.args or []
+    if not args:
+        await update.effective_message.reply_text(
+            f"الاستخدام: /{update.effective_message.text.split()[0].lstrip('/')} <رابط SheerID>\n\n"
+            f"الخدمة: {label}"
+        )
+        return
+
+    url = args[0]
+    if row["credits"] < config.VERIFY_COST:
+        await update.effective_message.reply_text(
+            f"⚠️ رصيدك غير كافٍ! تحتاج {config.VERIFY_COST}، رصيدك {row['credits']}.\n"
+            "ادعُ أصدقاء /ref أو استخدم كود /use"
+        )
+        return
+
+    if not await models.deduct_credit(user.id, config.VERIFY_COST):
+        await update.effective_message.reply_text("⚠️ فشل خصم الرصيد.")
+        return
+
+    ver_id = await models.log_verification_start(user.id, service_key, url)
+
+    processing_msg = await update.effective_message.reply_text(
+        f"⏳ جاري معالجة {label}...\n"
+        f"تم خصم {config.VERIFY_COST} رصيد\n\nانتظر قليلاً..."
+    )
+
+    try:
+        result = await run_verification(service_key, url)
+    except Exception as exc:
+        log.exception("Verification error for %s", service_key)
+        await models.log_verification_finish(ver_id, user.id, success=False, error=str(exc))
+        await models.add_credits(user.id, config.VERIFY_COST)
+        await processing_msg.edit_text(
+            f"❌ خطأ: {exc}\n\nتم إرجاع الرصيد."
+        )
+        return
+
+    if result.get("success"):
+        await models.log_verification_finish(ver_id, user.id, success=True)
+        result_msg = f"✅ {label} — نجاح!\n\n"
+        if result.get("pending"):
+            result_msg += "تم تقديم المستندات، بانتظار المراجعة.\n"
+        code = result.get("rewardCode")
+        if code:
+            result_msg += f"🎁 كود التفعيل: `{code}`\n"
+        if result.get("redirect_url"):
+            result_msg += f"🔗 الرابط:\n{result['redirect_url']}"
+        await processing_msg.edit_text(result_msg, parse_mode="Markdown")
+    else:
+        await models.log_verification_finish(
+            ver_id, user.id, success=False, error=result.get("error")
+        )
+        await models.add_credits(user.id, config.VERIFY_COST)
+        await processing_msg.edit_text(
+            f"❌ فشل: {result.get('error', result.get('message', 'خطأ غير معروف'))}\n\nتم إرجاع الرصيد."
+        )
+
+    admin_text = (
+        f"📥 تحقق ({label})\n"
+        f"المستخدم: {user.id} @{user.username or '-'}\n"
+        f"النتيجة: {'✅' if result.get('success') else '❌'}\n"
+        f"الرابط: {url}"
+    )
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await ctx.bot.send_message(admin_id, admin_text)
+        except Exception:
+            pass
+
+
+async def cmd_verify(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await _cmd_verify_generic(update, ctx, "google_one", "Google One / Gemini")
+
+
+async def cmd_verify2(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await _cmd_verify_generic(update, ctx, "k12", "ChatGPT Teacher K12")
+
+
+async def cmd_verify3(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await _cmd_verify_generic(update, ctx, "spotify", "Spotify Student")
+
+
+async def cmd_verify4(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await _cmd_verify_generic(update, ctx, "boltnew", "Bolt.new Teacher")
+
+
+async def cmd_verify5(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await _cmd_verify_generic(update, ctx, "youtube", "YouTube Student")
+
+
+# ════════════════════════════════════════════════
+# /getV4Code — check Bolt.new reward code
+# ════════════════════════════════════════════════
+
+async def cmd_getV4Code(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if await models.is_banned(user.id):
+        await update.effective_message.reply_text("🚫 حسابك محظور.")
+        return
+
+    args = ctx.args or []
+    if not args:
+        await update.effective_message.reply_text(
+            "الاستخدام: /getV4Code <verification_id>\n\n"
+            "مثال: /getV4Code 6929436b50d7dc18638890d0"
+        )
+        return
+
+    verification_id = args[0].strip()
+    processing_msg = await update.effective_message.reply_text("🔍 جاري البحث عن الكود...")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"https://my.sheerid.com/rest/v2/verification/{verification_id}"
+            )
+            if response.status_code != 200:
+                await processing_msg.edit_text(f"❌ فشل الاستعلام (HTTP {response.status_code}).")
+                return
+
+            data = response.json()
+            current_step = data.get("currentStep")
+            reward_code = data.get("rewardCode") or data.get("rewardData", {}).get("rewardCode")
+            redirect_url = data.get("redirectUrl")
+
+            if current_step == "success" and reward_code:
+                text = f"✅ تم!\n\n🎁 الكود: `{reward_code}`\n"
+                if redirect_url:
+                    text += f"\n🔗 {redirect_url}"
+                await processing_msg.edit_text(text, parse_mode="Markdown")
+            elif current_step == "pending":
+                await processing_msg.edit_text("⏳ لا يزال قيد المراجعة. حاول لاحقاً.")
+            elif current_step == "error":
+                errors = data.get("errorIds", [])
+                await processing_msg.edit_text(
+                    f"❌ فشل التحقق\n{', '.join(errors) if errors else 'خطأ غير معروف'}"
+                )
+            else:
+                await processing_msg.edit_text(f"⚠️ الحالة: {current_step}\nحاول لاحقاً.")
+
+    except Exception as e:
+        log.error("getV4Code error: %s", e)
+        await processing_msg.edit_text(f"❌ خطأ: {e}")
