@@ -321,50 +321,46 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
 
     async def _update_progress(text: str) -> None:
         nonlocal _current_step
-        # Map internal progress to 10-step display
-        # Internal steps: 0=email, 1=password, 2=2fa, 3=logged_in, 4+=sheerid
         try:
-            # Parse internal step from text
-            if "تسجيل الدخول" in text or "Email" in text or "الإيميل" in text:
-                _current_step = 0
-            elif "كلمة السر" in text or "Password" in text or "كلمة المرور" in text:
-                _current_step = 2
-            elif "2FA" in text or "المصادقة" in text or "الثنائية" in text:
-                _current_step = 3
-            elif "الجلسة المحفوظة" in text:
-                _current_step = 3
-            elif "تم تسجيل الدخول" in text or "login succeeded" in text.lower():
-                _current_step = 4
-            elif "SheerID" in text or "التحقق" in text:
-                if "إنشاء" in text or "create" in text.lower():
-                    _current_step = 4
-                elif "student" in text.lower() or "بيانات" in text:
-                    _current_step = 5
-                elif "upload" in text.lower() or "مستند" in text:
-                    _current_step = 6
-                elif "offer" in text.lower() or "عرض" in text:
-                    _current_step = 7
-                elif "claim" in text.lower() or "مطالبة" in text:
-                    _current_step = 7
-                elif "payment" in text.lower() or "دفع" in text:
-                    _current_step = 8
-                else:
-                    _current_step = max(_current_step, 5)
-            elif "نجاح" in text or "success" in text.lower() or "🎉" in text:
+            lower = text.lower()
+            # Map internal progress text to 10-step index
+            if "تسجيل الدخول" in text or "الإيميل" in text or "1." in text:
+                _current_step = max(_current_step, 0)
+            if "spam" in lower or "2." in text:
+                _current_step = max(_current_step, 1)
+            if "كلمة السر" in text or "كلمة المرور" in text or "password" in lower or "3." in text:
+                _current_step = max(_current_step, 2)
+            if "2fa" in lower or "المصادقة" in text or "الثنائية" in text or "4." in text:
+                _current_step = max(_current_step, 3)
+            if "الجلسة المحفوظة" in text or "تم تسجيل الدخول" in text or "login succeeded" in lower:
+                _current_step = max(_current_step, 4)
+            if "sheerid" in lower or "التحقق" in text:
+                _current_step = max(_current_step, 4)
+            if "student" in lower or "بيانات" in text or "6." in text:
+                _current_step = max(_current_step, 5)
+            if "upload" in lower or "مستند" in text or "7." in text:
+                _current_step = max(_current_step, 6)
+            if "offer" in lower or "عرض" in text or "claim" in lower:
+                _current_step = max(_current_step, 7)
+            if "payment" in lower or "دفع" in text or "9." in text:
+                _current_step = max(_current_step, 8)
+            if "نجاح" in text or "success" in lower or "🎉" in text:
                 _current_step = 9
-            elif "فشل" in text or "error" in text.lower() or "❌" in text:
-                pass  # keep current step
 
             elapsed = time.time() - start_time
-            error_text = ""
-            if "فشل" in text or "خطأ" in text or "error" in text.lower():
-                error_text = text.replace("*", "").strip()[:100]
+            err = ""
+            if "❌" in text or "فشل" in text or "خطأ" in text:
+                # Strip markdown and trim
+                err = text.replace("*", "").replace("_", "").strip()
+                if len(err) > 80:
+                    err = err[:80] + "…"
 
-            display = _build_pixel_progress(gmail, _current_step, elapsed, error=error_text)
+            display = _build_pixel_progress(gmail, _current_step, elapsed, error=err)
             await progress_msg.edit_text(display)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Progress update display error: %s", e)
 
+    result = {"success": False, "error": "خطأ غير متوقع"}
     try:
         result = await verify_gemini_auto(
             _update_progress,
@@ -375,51 +371,53 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         )
     except Exception as exc:
         log.exception("Pixel auto crashed ver_id=%s", ver_id)
-        await models.log_verification_finish(ver_id, user.id, success=False, error=str(exc))
-        await models.add_credits(user.id, 1)
-        elapsed = time.time() - start_time
-        await progress_msg.edit_text(
-            _build_pixel_progress(gmail, _current_step, elapsed, error=f"خطأ: {exc}"),
-        )
-        return
+        result = {"success": False, "error": str(exc)}
 
     elapsed = time.time() - start_time
 
-    if result.get("success"):
-        await models.log_verification_finish(ver_id, user.id, success=True)
-        row = await models.get_user(user.id)
-        balance = row["credits"] if row else "—"
-        final_text = _build_pixel_progress(gmail, 10, elapsed, success=True)
-        final_text += f"\n💰 Balance: {balance} credits"
-        await progress_msg.edit_text(final_text, reply_markup=main_menu())
-    else:
-        await models.log_verification_finish(ver_id, user.id, success=False, error=result.get("error"))
-        await models.add_credits(user.id, 1)
-        error_msg = result.get("error", "خطأ غير معروف")[:100]
-        await progress_msg.edit_text(
-            _build_pixel_progress(gmail, _current_step, elapsed, error=error_msg),
-            reply_markup=main_menu(),
-        )
+    try:
+        if result.get("success"):
+            await models.log_verification_finish(ver_id, user.id, success=True)
+            row = await models.get_user(user.id)
+            balance = row["credits"] if row else "—"
+            final_text = _build_pixel_progress(gmail, 10, elapsed, success=True)
+            final_text += f"\n💰 Balance: {balance} credits"
+            await progress_msg.edit_text(final_text)
+        else:
+            await models.log_verification_finish(ver_id, user.id, success=False, error=result.get("error"))
+            await models.add_credits(user.id, 1)
+            error_msg = result.get("error", "خطأ غير معروف")
+            if len(error_msg) > 80:
+                error_msg = error_msg[:80] + "…"
+            await progress_msg.edit_text(
+                _build_pixel_progress(gmail, _current_step, elapsed, error=error_msg),
+            )
+    except Exception as e:
+        log.warning("Failed to update final progress: %s", e)
 
     # Notify admins
-    extra_lines = ""
-    if not result.get("success") and result.get("error"):
-        extra_lines += f"السبب: {result['error']}\n"
-    admin_text = (
-        "📥 طلب تحقق جديد (Pixel)\n\n"
-        f"المستخدم: {user.id}\n"
-        f"اليوزر: @{user.username or '-'}\n"
-        f"الخدمة: {meta['label']}\n"
-        f"رقم الطلب: {ver_id}\n"
-        f"النتيجة: {'نجاح ✅' if result.get('success') else 'فشل ❌'}\n"
-        f"الوقت: {int(elapsed)}s\n"
-        f"{extra_lines}"
-    )
-    for admin_id in config.ADMIN_IDS:
-        try:
-            await ctx.bot.send_message(admin_id, admin_text)
-        except Exception as e:
-            log.warning("Failed to notify admin %s: %s", admin_id, e)
+    try:
+        extra_lines = ""
+        if not result.get("success") and result.get("error"):
+            err_short = result["error"][:200]
+            extra_lines = f"السبب: {err_short}\n"
+        admin_text = (
+            "📥 طلب تحقق جديد (Pixel)\n\n"
+            f"المستخدم: {user.id}\n"
+            f"اليوزر: @{user.username or '-'}\n"
+            f"الخدمة: {meta['label']}\n"
+            f"رقم الطلب: {ver_id}\n"
+            f"النتيجة: {'نجاح ✅' if result.get('success') else 'فشل ❌'}\n"
+            f"الوقت: {int(elapsed)}s\n"
+            f"{extra_lines}"
+        )
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await ctx.bot.send_message(admin_id, admin_text)
+            except Exception as e:
+                log.warning("Failed to notify admin %s: %s", admin_id, e)
+    except Exception as e:
+        log.warning("Admin notification error: %s", e)
 
 
 # ────────────── Inline button handler ──────────────
