@@ -130,7 +130,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
         await models.add_credits(user.id, 1)
         await progress_msg.edit_text(
             f"❌ حدث خطأ:\n{exc}\n\nتم إرجاع الرصيد.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id=user.id),
         )
         return
 
@@ -146,7 +146,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
             f"🔗 رقم التحقق: `{result.get('verificationId', '—')}`\n"
             f"\nحالة SheerID: {sheerid_step}\n"
         )
-        await progress_msg.edit_text(reply, parse_mode="Markdown", reply_markup=main_menu())
+        await progress_msg.edit_text(reply, parse_mode="Markdown", reply_markup=main_menu(user_id=user.id))
     elif result.get("pending"):
         # SheerID is reviewing documents — start background polling
         vid = result.get("verificationId", "")
@@ -156,7 +156,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
             f"رقم التحقق: `{vid}`\n\n"
             "⏱ المراجعة قد تستغرق حتى 30 دقيقة.",
             parse_mode="Markdown",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id=user.id),
         )
         # Start background task
         asyncio.create_task(
@@ -178,7 +178,7 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
         await models.add_credits(user.id, 1)
         await progress_msg.edit_text(
             f"❌ فشل التحقق:\n{result.get('error', 'خطأ غير معروف')}\n\nتم إرجاع الرصيد.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id=user.id),
         )
 
     extra_lines = ""
@@ -273,7 +273,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not url:
         await msg.reply_text(
             "ℹ️ أرسل الرابط الصحيح أو اضغط /start حتى تظهر الأزرار.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id=user.id),
         )
         return
 
@@ -283,7 +283,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not service_key or service_key not in SERVICE_REGISTRY:
         await msg.reply_text(
             "❓ ما گدرت أحدد نوع الخدمة من الرابط. اختار الخدمة من القائمة:",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id=user.id),
         )
         return
 
@@ -318,7 +318,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await models.add_credits(user.id, 1)
         await msg.reply_text(
             f"❌ حدث خطأ أثناء التحقق:\n{exc}\n\nتم إرجاع الرصيد.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id=user.id),
         )
         return
 
@@ -336,13 +336,13 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             reply += f"الجامعة/المدرسة: {school}\n"
         reply += f"\nالحالة: {result.get('step', 'pending')}\n"
         reply += "\n⏳ انتظر 24-48 ساعة للمراجعة."
-        await msg.reply_markdown(reply, reply_markup=main_menu())
+        await msg.reply_markdown(reply, reply_markup=main_menu(user_id=user.id))
     else:
         await models.log_verification_finish(ver_id, user.id, success=False, error=result.get("error"))
         await models.add_credits(user.id, 1)
         await msg.reply_text(
             f"❌ فشل التحقق:\n{result.get('error', 'خطأ غير معروف')}\n\nتم إرجاع الرصيد.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id=user.id),
         )
 
     admin_text = (

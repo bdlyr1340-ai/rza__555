@@ -9,7 +9,7 @@ from bot import config
 from bot.db import models
 from bot.services import SERVICE_REGISTRY
 from bot.services.sheerid import verify_gemini_auto
-from bot.utils.keyboards import back_menu, main_menu
+from bot.utils.keyboards import admin_panel_menu, back_menu, main_menu
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.effective_message.reply_markdown(
         WELCOME_TEXT.format(credits=row["credits"]),
-        reply_markup=main_menu(),
+        reply_markup=main_menu(user_id=user.id),
     )
 
 
@@ -114,8 +114,96 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await query.edit_message_text(
             WELCOME_TEXT.format(credits=row.get("credits", 0)),
             parse_mode="Markdown",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id=query.from_user.id),
         )
+        return
+
+    if data == "admin_panel":
+        if query.from_user.id not in config.ADMIN_IDS:
+            return
+        await query.edit_message_text(
+            "🛠 *لوحة التحكم*\n\nاختر ما تريد:",
+            parse_mode="Markdown",
+            reply_markup=admin_panel_menu(),
+        )
+        return
+
+    if data.startswith("admin:"):
+        if query.from_user.id not in config.ADMIN_IDS:
+            return
+        action = data.split(":", 1)[1]
+        if action == "stats":
+            s = await models.admin_stats()
+            rate = (s["ver_success"] / s["ver_total"] * 100) if s["ver_total"] else 0
+            lines = [
+                "📊 *الإحصائيات*",
+                f"المستخدمون: *{s['users_total']}* (اليوم: {s['users_today']})",
+                f"الطلبات: *{s['ver_total']}* (اليوم: {s['ver_today']})",
+                f"نسبة النجاح الكلية: *{rate:.1f}%*",
+                "",
+                "*حسب الخدمة:*",
+            ]
+            for r in s["per_service"]:
+                n = int(r["n"])
+                ok = int(r["ok"])
+                pct = (ok / n * 100) if n else 0
+                lines.append(f"• `{r['service']}`: {ok}/{n} ({pct:.0f}%)")
+            await query.edit_message_text(
+                "\n".join(lines),
+                parse_mode="Markdown",
+                reply_markup=admin_panel_menu(),
+            )
+        elif action == "cards":
+            cards = await models.list_payment_cards()
+            if not cards:
+                await query.edit_message_text(
+                    "💳 لا توجد بطاقات محفوظة.\n\nأضف بطاقة: /addcard",
+                    reply_markup=admin_panel_menu(),
+                )
+            else:
+                lines = ["💳 *البطاقات المحفوظة:*\n"]
+                for c in cards:
+                    num = c["card_number"]
+                    masked = "*" * (len(num) - 4) + num[-4:]
+                    status = "✅" if c["is_active"] else "❌"
+                    lines.append(
+                        f"{status} #{c['id']} | `{masked}` | {c['expiry']} | "
+                        f"{c['cardholder'] or '-'} | فشل: {c['fail_count']}"
+                    )
+                lines.append("\nحذف: /delcard <رقم>")
+                await query.edit_message_text(
+                    "\n".join(lines),
+                    parse_mode="Markdown",
+                    reply_markup=admin_panel_menu(),
+                )
+        elif action == "addcard":
+            await query.edit_message_text(
+                "💳 *إضافة بطاقة جديدة*\n\n"
+                "أرسل الأمر:\n"
+                "`/addcard <رقم_البطاقة> <MM/YY> <CVV> [اسم]`\n\n"
+                "مثال:\n"
+                "`/addcard 4242424242424242 12/28 123 John Doe`",
+                parse_mode="Markdown",
+                reply_markup=admin_panel_menu(),
+            )
+        elif action == "addcredit":
+            await query.edit_message_text(
+                "👥 *إضافة رصيد*\n\n"
+                "أرسل الأمر:\n"
+                "`/addcredit <user_id> <amount>`\n\n"
+                "مثال:\n"
+                "`/addcredit 1694736891 100`",
+                parse_mode="Markdown",
+                reply_markup=admin_panel_menu(),
+            )
+        elif action == "broadcast":
+            await query.edit_message_text(
+                "📣 *رسالة جماعية*\n\n"
+                "أرسل الأمر:\n"
+                "`/broadcast <الرسالة>`",
+                parse_mode="Markdown",
+                reply_markup=admin_panel_menu(),
+            )
         return
 
     if data == "help":
