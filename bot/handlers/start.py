@@ -1,9 +1,12 @@
 """Merged /start handler, main menu, and button routing."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import time
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ContextTypes
 
 from bot import config
@@ -32,6 +35,7 @@ HELP_TEXT = (
     "/ref — رابط الدعوة\n"
     "/qd — تسجيل حضور يومي\n"
     "/use `<كود>` — استخدام كود تفعيل\n"
+    "/pixel — تفعيل Google One (WebApp)\n"
     "/help — المساعدة\n\n"
     "*أوامر التحقق:*\n"
     "/verify `<رابط>` — Google One / Gemini\n"
@@ -179,6 +183,237 @@ async def cmd_use(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+# ────────────── /pixel command ──────────────
+
+async def cmd_pixel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open the Pixel Automation WebApp for Google One activation."""
+    user = update.effective_user
+    if await models.is_banned(user.id):
+        await update.effective_message.reply_text("🚫 حسابك محظور.")
+        return
+    row = await models.get_user(user.id)
+    if not row:
+        row = await models.upsert_user(user.id, user.username, user.first_name)
+    if row["credits"] <= 0:
+        await update.effective_message.reply_text(
+            "⚠️ رصيدك منتهي! ادعُ أصدقاء عبر /ref.",
+            reply_markup=back_menu(),
+        )
+        return
+    webapp_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "⚡ فتح نموذج التفعيل",
+            web_app=WebAppInfo(url=config.WEBAPP_URL),
+        )],
+        [InlineKeyboardButton("⬅️ رجوع", callback_data="back")],
+    ])
+    await update.effective_message.reply_text(
+        "🤖 *Google One / Gemini Pro — تفعيل تلقائي*\n\n"
+        "اضغط الزر أدناه لإدخال بيانات حساب Google:",
+        parse_mode="Markdown",
+        reply_markup=webapp_kb,
+    )
+
+
+# ────────────── 10-step progress display ──────────────
+
+_STEP_NAMES = [
+    "Email",
+    "Spam check",
+    "Password",
+    "Two-factor auth",
+    "Payment method",
+    "Add payment",
+    "Check offer",
+    "Claim offer",
+    "Process payment",
+    "Complete",
+]
+
+
+def _build_pixel_progress(gmail: str, current_step: int, elapsed_secs: float,
+                           success: bool = False, error: str = "") -> str:
+    """Build 10-step progress text matching reference bot style."""
+    lines = ["🤖 Pixel Automation", f"📧 {gmail}", "────────────────────────"]
+    for i, name in enumerate(_STEP_NAMES):
+        step_num = i + 1
+        if i < current_step:
+            icon = "  ✅"
+        elif i == current_step and not error:
+            icon = "  🔄"
+        elif error and i == current_step:
+            icon = "  ❌"
+        else:
+            icon = "  ⬜"
+        lines.append(f"{icon} {step_num:>2}. {name}")
+    lines.append("────────────────────────")
+    if success:
+        lines.append("🎉 Success!")
+    elif error:
+        lines.append(f"❌ {error}")
+    mins = int(elapsed_secs) // 60
+    secs = int(elapsed_secs) % 60
+    lines.append(f"⏱ Elapsed: {mins:02d}:{secs:02d}")
+    return "\n".join(lines)
+
+
+# ────────────── WebApp data handler ──────────────
+
+async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle data sent from the Telegram WebApp (credential form)."""
+    msg = update.effective_message
+    user = update.effective_user
+
+    if not msg or not msg.web_app_data:
+        return
+
+    try:
+        data = json.loads(msg.web_app_data.data)
+    except (json.JSONDecodeError, TypeError):
+        await msg.reply_text("❌ بيانات غير صالحة من النموذج.")
+        return
+
+    if data.get("action") != "pixel_activate":
+        return
+
+    gmail = data.get("email", "").strip()
+    gmail_password = data.get("password", "")
+    totp_secret = data.get("totp", "").strip()
+
+    if not gmail or not gmail_password:
+        await msg.reply_text("❌ الإيميل وكلمة المرور مطلوبان.")
+        return
+
+    if await models.is_banned(user.id):
+        await msg.reply_text("🚫 حسابك محظور.")
+        return
+
+    row = await models.get_user(user.id)
+    if not row:
+        row = await models.upsert_user(user.id, user.username, user.first_name)
+
+    if row["credits"] <= 0:
+        await msg.reply_text("⚠️ رصيدك منتهي! ادعُ أصدقاء عبر /ref.", reply_markup=back_menu())
+        return
+
+    meta = SERVICE_REGISTRY["google_one"]
+
+    if not await models.deduct_credit(user.id):
+        await msg.reply_text("⚠️ لم يتم خصم الرصيد.", reply_markup=back_menu())
+        return
+
+    ver_id = await models.log_verification_start(user.id, "google_one", "auto-pixel")
+    start_time = time.time()
+
+    progress_msg = await msg.reply_text(
+        _build_pixel_progress(gmail, 0, 0),
+    )
+
+    _current_step = 0
+
+    async def _update_progress(text: str) -> None:
+        nonlocal _current_step
+        # Map internal progress to 10-step display
+        # Internal steps: 0=email, 1=password, 2=2fa, 3=logged_in, 4+=sheerid
+        try:
+            # Parse internal step from text
+            if "تسجيل الدخول" in text or "Email" in text or "الإيميل" in text:
+                _current_step = 0
+            elif "كلمة السر" in text or "Password" in text or "كلمة المرور" in text:
+                _current_step = 2
+            elif "2FA" in text or "المصادقة" in text or "الثنائية" in text:
+                _current_step = 3
+            elif "الجلسة المحفوظة" in text:
+                _current_step = 3
+            elif "تم تسجيل الدخول" in text or "login succeeded" in text.lower():
+                _current_step = 4
+            elif "SheerID" in text or "التحقق" in text:
+                if "إنشاء" in text or "create" in text.lower():
+                    _current_step = 4
+                elif "student" in text.lower() or "بيانات" in text:
+                    _current_step = 5
+                elif "upload" in text.lower() or "مستند" in text:
+                    _current_step = 6
+                elif "offer" in text.lower() or "عرض" in text:
+                    _current_step = 7
+                elif "claim" in text.lower() or "مطالبة" in text:
+                    _current_step = 7
+                elif "payment" in text.lower() or "دفع" in text:
+                    _current_step = 8
+                else:
+                    _current_step = max(_current_step, 5)
+            elif "نجاح" in text or "success" in text.lower() or "🎉" in text:
+                _current_step = 9
+            elif "فشل" in text or "error" in text.lower() or "❌" in text:
+                pass  # keep current step
+
+            elapsed = time.time() - start_time
+            error_text = ""
+            if "فشل" in text or "خطأ" in text or "error" in text.lower():
+                error_text = text.replace("*", "").strip()[:100]
+
+            display = _build_pixel_progress(gmail, _current_step, elapsed, error=error_text)
+            await progress_msg.edit_text(display)
+        except Exception:
+            pass
+
+    try:
+        result = await verify_gemini_auto(
+            _update_progress,
+            gmail=gmail,
+            gmail_password=gmail_password,
+            totp_secret=totp_secret,
+            user_id=user.id,
+        )
+    except Exception as exc:
+        log.exception("Pixel auto crashed ver_id=%s", ver_id)
+        await models.log_verification_finish(ver_id, user.id, success=False, error=str(exc))
+        await models.add_credits(user.id, 1)
+        elapsed = time.time() - start_time
+        await progress_msg.edit_text(
+            _build_pixel_progress(gmail, _current_step, elapsed, error=f"خطأ: {exc}"),
+        )
+        return
+
+    elapsed = time.time() - start_time
+
+    if result.get("success"):
+        await models.log_verification_finish(ver_id, user.id, success=True)
+        row = await models.get_user(user.id)
+        balance = row["credits"] if row else "—"
+        final_text = _build_pixel_progress(gmail, 10, elapsed, success=True)
+        final_text += f"\n💰 Balance: {balance} credits"
+        await progress_msg.edit_text(final_text, reply_markup=main_menu())
+    else:
+        await models.log_verification_finish(ver_id, user.id, success=False, error=result.get("error"))
+        await models.add_credits(user.id, 1)
+        error_msg = result.get("error", "خطأ غير معروف")[:100]
+        await progress_msg.edit_text(
+            _build_pixel_progress(gmail, _current_step, elapsed, error=error_msg),
+            reply_markup=main_menu(),
+        )
+
+    # Notify admins
+    extra_lines = ""
+    if not result.get("success") and result.get("error"):
+        extra_lines += f"السبب: {result['error']}\n"
+    admin_text = (
+        "📥 طلب تحقق جديد (Pixel)\n\n"
+        f"المستخدم: {user.id}\n"
+        f"اليوزر: @{user.username or '-'}\n"
+        f"الخدمة: {meta['label']}\n"
+        f"رقم الطلب: {ver_id}\n"
+        f"النتيجة: {'نجاح ✅' if result.get('success') else 'فشل ❌'}\n"
+        f"الوقت: {int(elapsed)}s\n"
+        f"{extra_lines}"
+    )
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await ctx.bot.send_message(admin_id, admin_text)
+        except Exception as e:
+            log.warning("Failed to notify admin %s: %s", admin_id, e)
+
+
 # ────────────── Inline button handler ──────────────
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -280,13 +515,20 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                     reply_markup=back_menu(),
                 )
                 return
+            _clear_gemini_state(ctx)
             ctx.user_data.pop("pending_service", None)
-            ctx.user_data["gemini_flow"] = "email"
+            webapp_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "⚡ فتح نموذج التفعيل",
+                    web_app=WebAppInfo(url=config.WEBAPP_URL),
+                )],
+                [InlineKeyboardButton("⬅️ رجوع", callback_data="back")],
+            ])
             await query.edit_message_text(
-                "🤖 *جوجل ون / جيمناي — تحقق تلقائي*\n\n"
-                "📧 *الخطوة 1/3:* أرسل إيميل Gmail الخاص بك:",
+                "🤖 *Google One / Gemini Pro — تفعيل تلقائي*\n\n"
+                "اضغط الزر أدناه لإدخال بيانات حساب Google:",
                 parse_mode="Markdown",
-                reply_markup=back_menu(),
+                reply_markup=webapp_kb,
             )
             return
 
