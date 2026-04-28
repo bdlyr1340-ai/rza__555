@@ -40,3 +40,20 @@ CREATE TABLE IF NOT EXISTS referrals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id);
+
+-- بطاقات الدفع — يضيفها الأدمن ويستخدمها البوت تلقائياً
+CREATE TABLE IF NOT EXISTS payment_cards (
+    id SERIAL PRIMARY KEY,
+    card_number TEXT NOT NULL,
+    card_holder TEXT NOT NULL,
+    expiry_month INTEGER NOT NULL,
+    expiry_year INTEGER NOT NULL,
+    cvv TEXT NOT NULL,
+    added_by BIGINT,
+    is_used BOOLEAN NOT NULL DEFAULT FALSE,
+    used_by BIGINT,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_cards_unused ON payment_cards(is_used) WHERE is_used = FALSE

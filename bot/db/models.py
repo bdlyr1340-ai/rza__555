@@ -150,3 +150,69 @@ async def admin_stats() -> Dict[str, Any]:
         "ver_success": ver_success or 0,
         "per_service": [dict(r) for r in per_service],
     }
+
+
+# ───────── بطاقات الدفع ─────────
+
+async def add_card(
+    card_number: str,
+    card_holder: str,
+    expiry_month: int,
+    expiry_year: int,
+    cvv: str,
+    added_by: int,
+) -> Dict[str, Any]:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        row = await c.fetchrow(
+            "INSERT INTO payment_cards (card_number, card_holder, expiry_month, expiry_year, cvv, added_by) "
+            "VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+            card_number, card_holder, expiry_month, expiry_year, cvv, added_by,
+        )
+        return dict(row)
+
+
+async def list_cards(only_unused: bool = False) -> List[Dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        if only_unused:
+            rows = await c.fetch(
+                "SELECT * FROM payment_cards WHERE is_used = FALSE ORDER BY id"
+            )
+        else:
+            rows = await c.fetch("SELECT * FROM payment_cards ORDER BY id")
+        return [dict(r) for r in rows]
+
+
+async def get_next_card() -> Optional[Dict[str, Any]]:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        row = await c.fetchrow(
+            "SELECT * FROM payment_cards WHERE is_used = FALSE ORDER BY id LIMIT 1"
+        )
+        return dict(row) if row else None
+
+
+async def mark_card_used(card_id: int, used_by: int) -> None:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        await c.execute(
+            "UPDATE payment_cards SET is_used = TRUE, used_by = $1, used_at = NOW() WHERE id = $2",
+            used_by, card_id,
+        )
+
+
+async def delete_card(card_id: int) -> bool:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        result = await c.execute("DELETE FROM payment_cards WHERE id = $1", card_id)
+        return result == "DELETE 1"
+
+
+async def cards_stats() -> Dict[str, int]:
+    pool = get_pool()
+    async with pool.acquire() as c:
+        total = await c.fetchval("SELECT COUNT(*) FROM payment_cards") or 0
+        unused = await c.fetchval("SELECT COUNT(*) FROM payment_cards WHERE is_used = FALSE") or 0
+        used = await c.fetchval("SELECT COUNT(*) FROM payment_cards WHERE is_used = TRUE") or 0
+    return {"total": total, "unused": unused, "used": used}
