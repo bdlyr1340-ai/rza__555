@@ -82,6 +82,37 @@ STUDENT_UNIVERSITIES: List[Dict[str, Any]] = [
     {"id": 588772, "name": "FPT University", "domain": "fpt.edu.vn", "weight": 88},
 ]
 
+# Google One program uses different organization IDs than other programs
+GOOGLE_ONE_UNIVERSITIES: List[Dict[str, Any]] = [
+    {"id": 1, "name": "A T Still University of Health Sciences", "domain": "atsu.edu", "weight": 95},
+    {"id": 2, "name": "Abilene Christian University", "domain": "acu.edu", "weight": 95},
+    {"id": 3, "name": "Abraham Baldwin Agricultural College", "domain": "abac.edu", "weight": 90},
+    {"id": 4, "name": "Academy of Art University", "domain": "academyart.edu", "weight": 90},
+    {"id": 5, "name": "Adams State University", "domain": "adams.edu", "weight": 90},
+    {"id": 7, "name": "Agnes Scott College", "domain": "agnesscott.edu", "weight": 88},
+    {"id": 9, "name": "Alabama State University", "domain": "alasu.edu", "weight": 90},
+    {"id": 20, "name": "Allegheny College", "domain": "allegheny.edu", "weight": 88},
+    {"id": 30, "name": "American University", "domain": "american.edu", "weight": 93},
+    {"id": 50, "name": "Appalachian State University", "domain": "appstate.edu", "weight": 92},
+    {"id": 60, "name": "Arizona Christian University", "domain": "arizonachristian.edu", "weight": 88},
+    {"id": 70, "name": "Arkansas State University", "domain": "astate.edu", "weight": 90},
+    {"id": 100, "name": "Auburn University", "domain": "auburn.edu", "weight": 93},
+    {"id": 200, "name": "Baylor University", "domain": "baylor.edu", "weight": 93},
+    {"id": 250, "name": "Belmont University", "domain": "belmont.edu", "weight": 90},
+    {"id": 300, "name": "Bethune Cookman University", "domain": "cookman.edu", "weight": 88},
+    {"id": 400, "name": "Boise State University", "domain": "boisestate.edu", "weight": 92},
+    {"id": 500, "name": "Boston University", "domain": "bu.edu", "weight": 95},
+    {"id": 600, "name": "California State University Fullerton", "domain": "fullerton.edu", "weight": 92},
+    {"id": 900, "name": "Central Michigan University", "domain": "cmich.edu", "weight": 90},
+    {"id": 1100, "name": "Clark University", "domain": "clarku.edu", "weight": 88},
+    {"id": 1500, "name": "DePaul University", "domain": "depaul.edu", "weight": 92},
+    {"id": 1860, "name": "Louisiana Christian University", "domain": "lacollege.edu", "weight": 88},
+    {"id": 2000, "name": "Eastern Michigan University", "domain": "emich.edu", "weight": 90},
+    {"id": 4508518, "name": "AB Tech Community College", "domain": "abtech.edu", "weight": 88},
+    {"id": 10496745, "name": "1 on 1 Technical College", "domain": "1on1tech.edu", "weight": 85},
+    {"id": 650233, "name": "AI Miami International University", "domain": "artinstitutes.edu", "weight": 88},
+]
+
 TEACHER_UNIVERSITIES: List[Dict[str, Any]] = [
     {"id": 2565, "name": "Pennsylvania State University-Main Campus", "domain": "psu.edu", "weight": 100},
     {"id": 3499, "name": "University of California, Los Angeles", "domain": "ucla.edu", "weight": 98},
@@ -890,7 +921,7 @@ async def verify_gemini_auto(
     program_id = PROGRAM_IDS["google_one"]
 
     first, last = _generate_name()
-    uni = _weighted_choice(STUDENT_UNIVERSITIES)
+    uni = _weighted_choice(GOOGLE_ONE_UNIVERSITIES)
     student_email = _generate_email(first, last, uni["domain"])
     dob = _generate_student_dob()
     fingerprint = _generate_fingerprint()
