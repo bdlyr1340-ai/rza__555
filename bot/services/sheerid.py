@@ -1333,14 +1333,9 @@ async def verify_gemini_auto(
             cdp_mode = True
             await stealth.apply_stealth_async(ctx_browser)
             page = await ctx_browser.new_page()
-            # Quick connectivity check
-            try:
-                resp = await page.goto("https://www.google.com/generate_204", wait_until="commit", timeout=20_000)
-                if resp and resp.status != 204:
-                    log.warning("Cloud browser connectivity check returned status %d", resp.status)
-            except Exception as conn_exc:
-                log.warning("Cloud browser connectivity failed: %s", conn_exc)
-                raise conn_exc
+            # Cloud browser connected via CDP — skip strict connectivity check
+            # (generate_204 may return ERR_ABORTED on some cloud providers)
+            log.info("Cloud browser page created — skipping connectivity pre-check")
             _cloud_connected = True
             log.info("Cloud browser connected successfully via %s", _browser_provider)
         except Exception as cloud_exc:
