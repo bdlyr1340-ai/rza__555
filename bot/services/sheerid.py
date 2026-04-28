@@ -1167,17 +1167,21 @@ async def verify_gemini_auto(
                         options_text = ""
                         log.warning("Could not read 2FA options page text")
 
-                    # Look for "Google Authenticator" or code-based option
+                    # Log all available 2FA options for debugging
+                    try:
+                        all_2fa = await page.locator("li").all_text_contents()
+                        log.info("2FA options after 'Try another way': %s", [o.strip()[:60] for o in all_2fa if o.strip()][:8])
+                    except Exception:
+                        pass
+
+                    # Look for "Google Authenticator" or TOTP-specific option
                     auth_option = page.locator(
                         "li:has-text('Authenticator'), "
                         "li:has-text('Google Authenticator'), "
                         "div[role='link']:has-text('Authenticator'), "
                         "div[data-challengetype='6'], "
-                        "li:has-text('verification code'), "
-                        "li:has-text('code from'), "
                         "li:has-text('authenticator app'), "
-                        "li:has-text('Enter a code'), "
-                        "li:has-text('security code')"
+                        "li:has-text('Enter a code from')"
                     )
                     if await auth_option.count() > 0:
                         auth_text = await auth_option.first.text_content()
@@ -1238,17 +1242,20 @@ async def verify_gemini_auto(
                 else:
                     # No "Try another way" — we may already be on the selection page
                     log.info("No 'Try another way' button — checking if already on selection page")
+                    # Log all available 2FA options for debugging
+                    try:
+                        all_2fa = await page.locator("li").all_text_contents()
+                        log.info("2FA options on selection page: %s", [o.strip()[:60] for o in all_2fa if o.strip()][:8])
+                    except Exception:
+                        pass
+
                     auth_option_direct = page.locator(
                         "li:has-text('Authenticator'), "
                         "li:has-text('Google Authenticator'), "
                         "div[role='link']:has-text('Authenticator'), "
                         "div[data-challengetype='6'], "
-                        "li:has-text('verification code'), "
-                        "li:has-text('code from'), "
                         "li:has-text('authenticator app'), "
-                        "li:has-text('security code'), "
-                        "li:has-text('Enter a code'), "
-                        "li:has-text('Get a verification code')"
+                        "li:has-text('Enter a code from')"
                     )
                     if await auth_option_direct.count() > 0:
                         auth_text = await auth_option_direct.first.text_content()
