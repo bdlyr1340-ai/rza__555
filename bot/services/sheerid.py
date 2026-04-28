@@ -1235,10 +1235,75 @@ async def verify_gemini_auto(
                         result = {"success": False, "error": "Google Authenticator غير مفعّل — فعّله من إعدادات الحساب أولاً"}
                         return result
                 else:
-                    log.warning("No 'Try another way' button found on 2FA page")
-                    await on_progress(_build_progress(2, error=f"تحقق أمني غير مدعوم: {title}"))
-                    result = {"success": False, "error": f"تحقق أمني غير مدعوم: {title}"}
-                    return result
+                    # No "Try another way" — we may already be on the selection page
+                    log.info("No 'Try another way' button — checking if already on selection page")
+                    auth_option_direct = page.locator(
+                        "li:has-text('Authenticator'), "
+                        "li:has-text('Google Authenticator'), "
+                        "div[role='link']:has-text('Authenticator'), "
+                        "div[data-challengetype='6'], "
+                        "li:has-text('verification code'), "
+                        "li:has-text('code from'), "
+                        "li:has-text('authenticator app'), "
+                        "li:has-text('security code'), "
+                        "div:has-text('Enter a code') >> xpath=ancestor::li, "
+                        "div:has-text('Get a verification code') >> xpath=ancestor::li"
+                    )
+                    if await auth_option_direct.count() > 0:
+                        auth_text = await auth_option_direct.first.text_content()
+                        log.info("Found authenticator on selection page: '%s'", auth_text)
+                        await auth_option_direct.first.click()
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(2)
+
+                        # Now look for TOTP input
+                        totp_input3 = page.locator(
+                            'input[type="tel"]:visible, '
+                            'input[id="totpPin"]:visible, '
+                            'input[name="totpPin"]:visible'
+                        )
+                        if await totp_input3.count() > 0 and totp_obj:
+                            totp_code3 = totp_obj.now()
+                            log.info("Entering TOTP code via selection page path")
+                            await totp_input3.first.fill(totp_code3)
+                            totp_next3 = page.locator("#totpNext")
+                            if await totp_next3.count() == 0:
+                                totp_next3 = page.get_by_role("button", name="Next")
+                            if await totp_next3.count() > 0:
+                                await totp_next3.click()
+                            await asyncio.sleep(4)
+
+                            totp_err3 = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
+                            if await totp_err3.count() > 0:
+                                err_text = await totp_err3.first.text_content()
+                                if err_text and err_text.strip():
+                                    log.warning("Google 2FA error (selection): %s", err_text.strip())
+                                    await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
+                                    result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
+                                    return result
+
+                            await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
+                        elif totp_obj:
+                            await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
+                            result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
+                            return result
+                        else:
+                            await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أرسل مفتاح 2FA السري"))
+                            result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
+                            return result
+                    else:
+                        log.warning("No 'Try another way' and no authenticator option on page")
+                        try:
+                            all_opts = await page.locator("li").all_text_contents()
+                            log.warning("Available 2FA options: %s", all_opts[:5])
+                        except Exception:
+                            pass
+                        await on_progress(_build_progress(2, error="Google Authenticator غير مفعّل على هذا الحساب"))
+                        result = {"success": False, "error": "Google Authenticator غير مفعّل — فعّله من إعدادات الحساب أولاً"}
+                        return result
             except Exception as taw_exc:
                 log.warning("Error in 'Try another way' flow: %s", taw_exc)
                 await on_progress(_build_progress(2, error=f"خطأ في التحول لـ Authenticator: {taw_exc}"))
