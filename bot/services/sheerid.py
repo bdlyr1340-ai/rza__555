@@ -84,33 +84,52 @@ STUDENT_UNIVERSITIES: List[Dict[str, Any]] = [
 
 # Google One program uses different organization IDs than other programs
 GOOGLE_ONE_UNIVERSITIES: List[Dict[str, Any]] = [
-    {"id": 1, "name": "A T Still University of Health Sciences", "domain": "atsu.edu", "weight": 95},
-    {"id": 2, "name": "Abilene Christian University", "domain": "acu.edu", "weight": 95},
-    {"id": 3, "name": "Abraham Baldwin Agricultural College", "domain": "abac.edu", "weight": 90},
-    {"id": 4, "name": "Academy of Art University", "domain": "academyart.edu", "weight": 90},
-    {"id": 5, "name": "Adams State University", "domain": "adams.edu", "weight": 90},
-    {"id": 7, "name": "Agnes Scott College", "domain": "agnesscott.edu", "weight": 88},
-    {"id": 9, "name": "Alabama State University", "domain": "alasu.edu", "weight": 90},
-    {"id": 20, "name": "Allegheny College", "domain": "allegheny.edu", "weight": 88},
-    {"id": 30, "name": "American University", "domain": "american.edu", "weight": 93},
-    {"id": 50, "name": "Appalachian State University", "domain": "appstate.edu", "weight": 92},
-    {"id": 60, "name": "Arizona Christian University", "domain": "arizonachristian.edu", "weight": 88},
-    {"id": 70, "name": "Arkansas State University", "domain": "astate.edu", "weight": 90},
-    {"id": 100, "name": "Auburn University", "domain": "auburn.edu", "weight": 93},
-    {"id": 200, "name": "Baylor University", "domain": "baylor.edu", "weight": 93},
-    {"id": 250, "name": "Belmont University", "domain": "belmont.edu", "weight": 90},
-    {"id": 300, "name": "Bethune Cookman University", "domain": "cookman.edu", "weight": 88},
-    {"id": 400, "name": "Boise State University", "domain": "boisestate.edu", "weight": 92},
-    {"id": 500, "name": "Boston University", "domain": "bu.edu", "weight": 95},
-    {"id": 600, "name": "California State University Fullerton", "domain": "fullerton.edu", "weight": 92},
-    {"id": 900, "name": "Central Michigan University", "domain": "cmich.edu", "weight": 90},
-    {"id": 1100, "name": "Clark University", "domain": "clarku.edu", "weight": 88},
-    {"id": 1500, "name": "DePaul University", "domain": "depaul.edu", "weight": 92},
-    {"id": 1860, "name": "Louisiana Christian University", "domain": "lacollege.edu", "weight": 88},
-    {"id": 2000, "name": "Eastern Michigan University", "domain": "emich.edu", "weight": 90},
-    {"id": 4508518, "name": "AB Tech Community College", "domain": "abtech.edu", "weight": 88},
-    {"id": 10496745, "name": "1 on 1 Technical College", "domain": "1on1tech.edu", "weight": 85},
-    {"id": 650233, "name": "AI Miami International University", "domain": "artinstitutes.edu", "weight": 88},
+    # =========== USA - HIGH PRIORITY (real SheerID IDs) ===========
+    {"id": 2565, "name": "Pennsylvania State University-Main Campus", "domain": "psu.edu", "weight": 100},
+    {"id": 3499, "name": "University of California, Los Angeles", "domain": "ucla.edu", "weight": 98},
+    {"id": 3491, "name": "University of California, Berkeley", "domain": "berkeley.edu", "weight": 97},
+    {"id": 1953, "name": "Massachusetts Institute of Technology", "domain": "mit.edu", "weight": 95},
+    {"id": 3113, "name": "Stanford University", "domain": "stanford.edu", "weight": 95},
+    {"id": 2285, "name": "New York University", "domain": "nyu.edu", "weight": 96},
+    {"id": 1426, "name": "Harvard University", "domain": "harvard.edu", "weight": 92},
+    {"id": 590759, "name": "Yale University", "domain": "yale.edu", "weight": 90},
+    {"id": 2626, "name": "Princeton University", "domain": "princeton.edu", "weight": 90},
+    {"id": 698, "name": "Columbia University", "domain": "columbia.edu", "weight": 92},
+    {"id": 3508, "name": "University of Chicago", "domain": "uchicago.edu", "weight": 88},
+    {"id": 943, "name": "Duke University", "domain": "duke.edu", "weight": 88},
+    {"id": 751, "name": "Cornell University", "domain": "cornell.edu", "weight": 90},
+    {"id": 2420, "name": "Northwestern University", "domain": "northwestern.edu", "weight": 88},
+    {"id": 3568, "name": "University of Michigan", "domain": "umich.edu", "weight": 95},
+    {"id": 3686, "name": "University of Texas at Austin", "domain": "utexas.edu", "weight": 94},
+    {"id": 1217, "name": "Georgia Institute of Technology", "domain": "gatech.edu", "weight": 93},
+    {"id": 602, "name": "Carnegie Mellon University", "domain": "cmu.edu", "weight": 92},
+    {"id": 3477, "name": "University of California, San Diego", "domain": "ucsd.edu", "weight": 93},
+    {"id": 3600, "name": "University of North Carolina at Chapel Hill", "domain": "unc.edu", "weight": 90},
+    {"id": 3645, "name": "University of Southern California", "domain": "usc.edu", "weight": 91},
+    {"id": 3629, "name": "University of Pennsylvania", "domain": "upenn.edu", "weight": 90},
+    {"id": 1603, "name": "Indiana University Bloomington", "domain": "iu.edu", "weight": 88},
+    {"id": 2506, "name": "Ohio State University", "domain": "osu.edu", "weight": 90},
+    {"id": 2700, "name": "Purdue University", "domain": "purdue.edu", "weight": 89},
+    {"id": 3761, "name": "University of Washington", "domain": "uw.edu", "weight": 90},
+    {"id": 3770, "name": "University of Wisconsin-Madison", "domain": "wisc.edu", "weight": 88},
+    {"id": 3562, "name": "University of Maryland", "domain": "umd.edu", "weight": 87},
+    {"id": 519, "name": "Boston University", "domain": "bu.edu", "weight": 86},
+    {"id": 378, "name": "Arizona State University", "domain": "asu.edu", "weight": 92},
+    {"id": 3521, "name": "University of Florida", "domain": "ufl.edu", "weight": 90},
+    {"id": 3535, "name": "University of Illinois at Urbana-Champaign", "domain": "illinois.edu", "weight": 91},
+    {"id": 3557, "name": "University of Minnesota Twin Cities", "domain": "umn.edu", "weight": 88},
+    {"id": 3483, "name": "University of California, Davis", "domain": "ucdavis.edu", "weight": 89},
+    {"id": 3487, "name": "University of California, Irvine", "domain": "uci.edu", "weight": 88},
+    {"id": 3502, "name": "University of California, Santa Barbara", "domain": "ucsb.edu", "weight": 87},
+    {"id": 2874, "name": "Santa Monica College", "domain": "smc.edu", "weight": 85},
+    {"id": 2350, "name": "Northern Virginia Community College", "domain": "nvcc.edu", "weight": 84},
+    # =========== OTHER COUNTRIES (lower priority) ===========
+    {"id": 328355, "name": "University of Toronto", "domain": "utoronto.ca", "weight": 40},
+    {"id": 328315, "name": "University of British Columbia", "domain": "ubc.ca", "weight": 38},
+    {"id": 273409, "name": "University of Oxford", "domain": "ox.ac.uk", "weight": 35},
+    {"id": 273378, "name": "University of Cambridge", "domain": "cam.ac.uk", "weight": 35},
+    {"id": 345301, "name": "The University of Melbourne", "domain": "unimelb.edu.au", "weight": 30},
+    {"id": 345303, "name": "The University of Sydney", "domain": "sydney.edu.au", "weight": 28},
 ]
 
 TEACHER_UNIVERSITIES: List[Dict[str, Any]] = [
@@ -175,15 +194,23 @@ def _weighted_choice(items: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _generate_fingerprint() -> str:
+    """Generate realistic browser fingerprint to avoid fraud detection."""
+    resolutions = ["1920x1080", "1366x768", "1536x864", "1440x900", "1280x720", "2560x1440"]
+    timezones = [-8, -7, -6, -5, -4, 0, 1, 2, 3, 5.5, 8, 9, 10]
+    languages = ["en-US", "en-GB", "en-CA", "en-AU", "es-ES", "fr-FR", "de-DE", "pt-BR"]
+    platforms = ["Win32", "MacIntel", "Linux x86_64"]
+    vendors = ["Google Inc.", "Apple Computer, Inc.", ""]
     components = [
         str(int(time.time() * 1000)),
         str(random.random()),
-        random.choice(["1920x1080", "1366x768", "1536x864", "1440x900"]),
-        str(random.choice([-8, -7, -6, -5, -4, 0, 1, 2, 3, 8, 9])),
-        random.choice(["en-US", "en-GB", "en-CA"]),
-        random.choice(["Win32", "MacIntel", "Linux x86_64"]),
-        str(random.randint(1, 16)),
-        str(random.randint(2, 32)),
+        random.choice(resolutions),
+        str(random.choice(timezones)),
+        random.choice(languages),
+        random.choice(platforms),
+        random.choice(vendors),
+        str(random.randint(1, 16)),   # hardware concurrency
+        str(random.randint(2, 32)),   # device memory GB
+        str(random.randint(0, 1)),    # touch support
     ]
     return hashlib.md5("|".join(components).encode()).hexdigest()
 
@@ -265,6 +292,75 @@ def _generate_student_id_image(first: str, last: str, school: str) -> bytes:
     for i in range(20):
         x = 480 + i * 7
         draw.rectangle([(x, 280), (x + 3, 280 + random.randint(30, 50))], fill=(0, 0, 0))
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _generate_transcript_image(first: str, last: str, school: str, dob: str) -> bytes:
+    """Generate academic transcript image (higher success rate than ID card)."""
+    w, h = 850, 1100
+    img = Image.new("RGB", (w, h), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    try:
+        font_header = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        font_text = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+        font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+    except Exception:
+        font_header = font_title = font_text = font_bold = ImageFont.load_default()
+
+    draw.text((w // 2, 50), school.upper(), fill=(0, 0, 0), font=font_header, anchor="mm")
+    draw.text((w // 2, 90), "OFFICIAL ACADEMIC TRANSCRIPT", fill=(50, 50, 50), font=font_title, anchor="mm")
+    draw.line([(50, 110), (w - 50, 110)], fill=(0, 0, 0), width=2)
+
+    y = 150
+    draw.text((50, y), f"Student Name: {first} {last}", fill=(0, 0, 0), font=font_bold)
+    draw.text((w - 300, y), f"Student ID: {random.randint(10000000, 99999999)}", fill=(0, 0, 0), font=font_text)
+    y += 30
+    draw.text((50, y), f"Date of Birth: {dob}", fill=(0, 0, 0), font=font_text)
+    draw.text((w - 300, y), f"Date Issued: {time.strftime('%Y-%m-%d')}", fill=(0, 0, 0), font=font_text)
+    y += 40
+
+    draw.rectangle([(50, y), (w - 50, y + 40)], fill=(240, 240, 240))
+    semester = random.choice(["SPRING", "FALL"])
+    draw.text((w // 2, y + 20), f"CURRENT STATUS: ENROLLED ({semester} {time.strftime('%Y')})", fill=(0, 100, 0), font=font_bold, anchor="mm")
+    y += 70
+
+    courses = [
+        ("CS 101", "Intro to Computer Science", "4.0", random.choice(["A", "A-", "B+"])),
+        ("MATH 201", "Calculus I", "3.0", random.choice(["A-", "B+", "A"])),
+        ("ENG 102", "Academic Writing", "3.0", random.choice(["B+", "A-", "B"])),
+        ("PHYS 150", "Physics for Engineers", "4.0", random.choice(["A", "A-", "B+"])),
+        ("HIST 110", "World History", "3.0", random.choice(["A", "B+", "A-"])),
+    ]
+
+    draw.text((50, y), "Course Code", font=font_bold, fill=(0, 0, 0))
+    draw.text((200, y), "Course Title", font=font_bold, fill=(0, 0, 0))
+    draw.text((600, y), "Credits", font=font_bold, fill=(0, 0, 0))
+    draw.text((700, y), "Grade", font=font_bold, fill=(0, 0, 0))
+    y += 20
+    draw.line([(50, y), (w - 50, y)], fill=(0, 0, 0), width=1)
+    y += 20
+
+    for code, title, cred, grade in courses:
+        draw.text((50, y), code, font=font_text, fill=(0, 0, 0))
+        draw.text((200, y), title, font=font_text, fill=(0, 0, 0))
+        draw.text((600, y), cred, font=font_text, fill=(0, 0, 0))
+        draw.text((700, y), grade, font=font_text, fill=(0, 0, 0))
+        y += 30
+
+    y += 20
+    draw.line([(50, y), (w - 50, y)], fill=(0, 0, 0), width=1)
+    y += 30
+
+    gpa = round(random.uniform(3.5, 3.95), 2)
+    draw.text((50, y), f"Cumulative GPA: {gpa}", font=font_bold, fill=(0, 0, 0))
+    draw.text((w - 300, y), "Academic Standing: Good", font=font_bold, fill=(0, 0, 0))
+
+    draw.text((w // 2, h - 50), "This document is electronically generated and valid without signature.",
+              fill=(100, 100, 100), font=font_text, anchor="mm")
 
     buf = BytesIO()
     img.save(buf, format="PNG")
@@ -418,12 +514,18 @@ async def verify_student(url: str, service_key: str) -> Dict[str, Any]:
 
     log.info("Student verify: %s %s @ %s (vid=%s…)", first, last, uni["name"], vid[:12])
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
+    _api_proxy = _api_proxy_url if _api_proxy_url else None
+    async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
         err = await _check_link(client, vid)
         if err:
             return {"success": False, "error": err}
 
-        doc = _generate_student_id_image(first, last, uni["name"])
+        # Generate document: transcript 70%, student ID 30%
+        if random.random() < 0.7:
+            doc = _generate_transcript_image(first, last, uni["name"], dob)
+        else:
+            doc = _generate_student_id_image(first, last, uni["name"])
 
         body = {
             "firstName": first,
@@ -493,7 +595,9 @@ async def verify_teacher(url: str) -> Dict[str, Any]:
 
     log.info("Teacher verify: %s %s @ %s (vid=%s…)", first, last, uni["name"], vid[:12])
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
+    _api_proxy = _api_proxy_url if _api_proxy_url else None
+    async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
         err = await _check_link(client, vid)
         if err:
             return {"success": False, "error": err}
@@ -567,7 +671,9 @@ async def verify_k12(url: str) -> Dict[str, Any]:
 
     log.info("K12 verify: %s %s @ %s (vid=%s…)", first, last, school["name"], vid[:12])
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
+    _api_proxy = _api_proxy_url if _api_proxy_url else None
+    async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
         err = await _check_link(client, vid)
         if err:
             return {"success": False, "error": err}
@@ -662,7 +768,9 @@ async def verify_veterans(url: str) -> Dict[str, Any]:
 
     log.info("Veterans verify: %s %s branch=%s (vid=%s…)", first, last, branch_name, vid[:12])
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
+    _api_proxy = _api_proxy_url if _api_proxy_url else None
+    async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
         err = await _check_link(client, vid)
         if err:
             return {"success": False, "error": err}
@@ -1478,7 +1586,11 @@ async def verify_gemini_auto(
 
         # ── Step 4: طريقة الدفع — SheerID create verification ──
         await on_progress(_build_progress(3, detail="جاري إنشاء التحقق في SheerID..."))
-        async with httpx.AsyncClient(timeout=30) as client:
+
+        # Use proxy for SheerID API calls too (avoids fraud detection)
+        _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
+        _api_proxy = _api_proxy_url if _api_proxy_url else None
+        async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
             create_data, create_status = await _api_request(
                 client, "POST",
                 "/verification",
@@ -1548,8 +1660,17 @@ async def verify_gemini_auto(
                 sso_data, sso_status = await _api_request(client, "DELETE", f"/verification/{vid}/step/sso")
                 log.info("SheerID skip SSO: status=%s", sso_status)
 
-            doc = _generate_student_id_image(first, last, uni["name"])
-            upload_body = {"files": [{"fileName": "student_card.png", "mimeType": "image/png", "fileSize": len(doc)}]}
+            # Generate document: transcript 70% of the time (higher success), ID card 30%
+            if random.random() < 0.7:
+                doc = _generate_transcript_image(first, last, uni["name"], dob)
+                doc_filename = "transcript.png"
+                log.info("Using academic transcript document")
+            else:
+                doc = _generate_student_id_image(first, last, uni["name"])
+                doc_filename = "student_card.png"
+                log.info("Using student ID card document")
+
+            upload_body = {"files": [{"fileName": doc_filename, "mimeType": "image/png", "fileSize": len(doc)}]}
             data, status = await _api_request(client, "POST", f"/verification/{vid}/step/docUpload", upload_body)
             log.info("SheerID docUpload: status=%s docs=%s", status, bool(data.get("documents")))
             if not data.get("documents"):
