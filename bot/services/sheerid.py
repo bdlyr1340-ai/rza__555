@@ -981,9 +981,23 @@ async def _google_login_and_claim(
         page = await ctx.new_page()
 
         try:
-            # Step 5: Payment method — go to Google sign-in
+            # Step 5: Payment method — go to Google sign-in (with retry on timeout)
             await on_progress(_build_progress(4))
-            await page.goto("https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin", wait_until="domcontentloaded", timeout=30000)
+            _signin_urls = [
+                "https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin",
+                "https://accounts.google.com/ServiceLogin",
+                "https://accounts.google.com/",
+            ]
+            for _attempt, _surl in enumerate(_signin_urls):
+                try:
+                    log.info("Sign-in attempt %d: %s", _attempt + 1, _surl)
+                    await page.goto(_surl, wait_until="domcontentloaded", timeout=90000)
+                    break
+                except Exception as _nav_err:
+                    log.warning("Sign-in nav attempt %d failed: %s", _attempt + 1, _nav_err)
+                    if _attempt == len(_signin_urls) - 1:
+                        raise
+                    await asyncio.sleep(random.uniform(3, 6))
             await asyncio.sleep(random.uniform(2, 4))
 
             # Enter email
@@ -1055,7 +1069,7 @@ async def _google_login_and_claim(
 
             # Step 7-8: Check offer & Claim — navigate to redirect URL
             await on_progress(_build_progress(7))
-            await page.goto(redirect_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(redirect_url, wait_until="domcontentloaded", timeout=90000)
             await asyncio.sleep(3)
 
             # Try to click any "Claim" / "Get offer" / "Continue" button
@@ -1278,7 +1292,7 @@ async def verify_gemini_auto(
                 await stealth.apply_stealth_async(page)
                 await asyncio.sleep(random.uniform(2, 4))
 
-            await page.goto(signin_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(signin_url, wait_until="domcontentloaded", timeout=90000)
             await asyncio.sleep(random.uniform(2, 4))
 
             # Check if email input is visible
@@ -1336,7 +1350,7 @@ async def verify_gemini_auto(
                 await stealth.apply_stealth_async(page)
                 await asyncio.sleep(random.uniform(3, 5))
                 alt_url = "https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin"
-                await page.goto(alt_url, wait_until="domcontentloaded", timeout=30000)
+                await page.goto(alt_url, wait_until="domcontentloaded", timeout=90000)
                 await asyncio.sleep(random.uniform(3, 5))
                 if await _enter_email_on_page(page, gmail):
                     try:
@@ -1799,7 +1813,7 @@ async def verify_gemini_auto(
         if redirect_url and page:
             try:
                 log.info("Navigating to redirect URL: %s", redirect_url)
-                await page.goto(redirect_url, wait_until="domcontentloaded", timeout=30000)
+                await page.goto(redirect_url, wait_until="domcontentloaded", timeout=90000)
                 await asyncio.sleep(3)
 
                 # Log what Google shows at the redirect URL
