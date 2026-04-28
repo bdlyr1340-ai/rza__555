@@ -22,6 +22,64 @@ SHEERID_BASE = "https://services.sheerid.com"
 MIN_DELAY_MS = 300
 MAX_DELAY_MS = 800
 
+
+# ---------------------------------------------------------------------------
+# Proxy rotation — supports multiple proxies (PROXY_URL or PROXY_LIST)
+# Format: ip:port:user:pass (one per line) or http://user:pass@ip:port
+# ---------------------------------------------------------------------------
+
+def _load_proxy_list() -> List[str]:
+    """Load proxies from PROXY_LIST (multi-line) or PROXY_URL (single)."""
+    proxies: List[str] = []
+
+    # PROXY_LIST: multi-line list of proxies (ip:port:user:pass format)
+    proxy_list_raw = os.environ.get("PROXY_LIST", "").strip()
+    if proxy_list_raw:
+        for line in proxy_list_raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(":")
+            if len(parts) == 4:
+                ip, port, user, pwd = parts
+                proxies.append(f"http://{user}:{pwd}@{ip}:{port}")
+            elif line.startswith(("http://", "https://", "socks5://")):
+                proxies.append(line)
+
+    # PROXY_URL: single proxy (backward compatible)
+    single = os.environ.get("PROXY_URL", "").strip()
+    if single and single not in proxies:
+        proxies.append(single)
+
+    return proxies
+
+
+_PROXY_POOL: List[str] = []
+_PROXY_INDEX = 0
+
+
+def _get_next_proxy() -> Optional[str]:
+    """Get next proxy from pool using round-robin rotation."""
+    global _PROXY_POOL, _PROXY_INDEX
+    if not _PROXY_POOL:
+        _PROXY_POOL = _load_proxy_list()
+    if not _PROXY_POOL:
+        return None
+    proxy = _PROXY_POOL[_PROXY_INDEX % len(_PROXY_POOL)]
+    _PROXY_INDEX += 1
+    return proxy
+
+
+def _get_random_proxy() -> Optional[str]:
+    """Get a random proxy from pool."""
+    global _PROXY_POOL
+    if not _PROXY_POOL:
+        _PROXY_POOL = _load_proxy_list()
+    if not _PROXY_POOL:
+        return None
+    return random.choice(_PROXY_POOL)
+
+
 # ---------------------------------------------------------------------------
 # Name data
 # ---------------------------------------------------------------------------
@@ -514,8 +572,8 @@ async def verify_student(url: str, service_key: str) -> Dict[str, Any]:
 
     log.info("Student verify: %s %s @ %s (vid=%s…)", first, last, uni["name"], vid[:12])
 
-    _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
-    _api_proxy = _api_proxy_url if _api_proxy_url else None
+    _api_proxy = _get_random_proxy()
+    log.info("Using proxy for student verify: %s", _api_proxy[:30] + "..." if _api_proxy else "none")
     async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
         err = await _check_link(client, vid)
         if err:
@@ -595,8 +653,7 @@ async def verify_teacher(url: str) -> Dict[str, Any]:
 
     log.info("Teacher verify: %s %s @ %s (vid=%s…)", first, last, uni["name"], vid[:12])
 
-    _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
-    _api_proxy = _api_proxy_url if _api_proxy_url else None
+    _api_proxy = _get_random_proxy()
     async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
         err = await _check_link(client, vid)
         if err:
@@ -671,8 +728,7 @@ async def verify_k12(url: str) -> Dict[str, Any]:
 
     log.info("K12 verify: %s %s @ %s (vid=%s…)", first, last, school["name"], vid[:12])
 
-    _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
-    _api_proxy = _api_proxy_url if _api_proxy_url else None
+    _api_proxy = _get_random_proxy()
     async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
         err = await _check_link(client, vid)
         if err:
@@ -768,8 +824,7 @@ async def verify_veterans(url: str) -> Dict[str, Any]:
 
     log.info("Veterans verify: %s %s branch=%s (vid=%s…)", first, last, branch_name, vid[:12])
 
-    _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
-    _api_proxy = _api_proxy_url if _api_proxy_url else None
+    _api_proxy = _get_random_proxy()
     async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
         err = await _check_link(client, vid)
         if err:
@@ -889,8 +944,8 @@ async def _google_login_and_claim(
         navigator_platform_override="Win32",
     )
 
-    # Parse proxy from environment
-    _proxy_url = os.environ.get("PROXY_URL", "").strip()
+    # Parse proxy from pool (rotated)
+    _proxy_url = _get_random_proxy()
     _proxy_cfg = None
     if _proxy_url:
         from urllib.parse import urlparse
@@ -900,6 +955,7 @@ async def _google_login_and_claim(
             _proxy_cfg["username"] = _p.username
         if _p.password:
             _proxy_cfg["password"] = _p.password
+        log.info("Playwright browser using proxy: %s:%s", _p.hostname, _p.port)
 
     async with async_playwright() as pw:
         _launch_kwargs: Dict[str, Any] = {
@@ -1125,8 +1181,8 @@ async def verify_gemini_auto(
         navigator_platform_override="Win32",
     )
 
-    # Parse proxy from environment (supports http/https/socks5)
-    proxy_url = os.environ.get("PROXY_URL", "").strip()
+    # Parse proxy from pool (rotated across multiple servers)
+    proxy_url = _get_random_proxy()
     proxy_cfg = None
     if proxy_url:
         from urllib.parse import urlparse
@@ -1588,8 +1644,8 @@ async def verify_gemini_auto(
         await on_progress(_build_progress(3, detail="جاري إنشاء التحقق في SheerID..."))
 
         # Use proxy for SheerID API calls too (avoids fraud detection)
-        _api_proxy_url = os.environ.get("PROXY_URL", "").strip()
-        _api_proxy = _api_proxy_url if _api_proxy_url else None
+        _api_proxy = _get_random_proxy()
+        log.info("Using proxy for SheerID API: %s", _api_proxy[:30] + "..." if _api_proxy else "none")
         async with httpx.AsyncClient(timeout=30, proxy=_api_proxy) as client:
             create_data, create_status = await _api_request(
                 client, "POST",
