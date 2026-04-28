@@ -1,9 +1,11 @@
 -- جداول البوت — تُنشأ وتُصلح تلقائياً عند أول تشغيل
+-- هذا الملف يتحمل وجود جدول users قديم بدون عمود user_id
 
 CREATE TABLE IF NOT EXISTS users (
-    user_id BIGINT PRIMARY KEY
+    user_id BIGINT
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS user_id BIGINT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS credits INTEGER NOT NULL DEFAULT 3;
@@ -13,6 +15,9 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- لازم user_id يكون عليه Unique حتى جدول verifications يكدر يسوي Foreign Key عليه.
+CREATE UNIQUE INDEX IF NOT EXISTS users_user_id_unique ON users(user_id);
 
 CREATE TABLE IF NOT EXISTS verifications (
     id SERIAL PRIMARY KEY,
