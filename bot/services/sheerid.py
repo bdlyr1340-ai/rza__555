@@ -1301,7 +1301,34 @@ async def verify_gemini_auto(
             if final_step == "success" and redirect_url:
                 await on_progress(_build_progress(6, detail="تم التحقق بنجاح! المطالبة بالعرض..."))
             elif final_step in ("docReview", "pending"):
-                await on_progress(_build_progress(6, detail=f"التحقق قيد المراجعة ({final_step})..."))
+                # Poll SheerID until verification is approved or rejected (max 2 minutes)
+                await on_progress(_build_progress(6, detail=f"التحقق قيد المراجعة ({final_step})... انتظار الموافقة"))
+                max_polls = 12
+                poll_interval = 10
+                for poll_i in range(max_polls):
+                    await asyncio.sleep(poll_interval)
+                    poll_data, poll_status = await _api_request(client, "GET", f"/verification/{vid}")
+                    poll_step = poll_data.get("currentStep", "unknown")
+                    poll_redirect = poll_data.get("redirectUrl", "")
+                    log.info("SheerID poll %d/%d: step=%s redirect=%s", poll_i + 1, max_polls, poll_step, bool(poll_redirect))
+
+                    if poll_step == "success" and poll_redirect:
+                        final_step = poll_step
+                        redirect_url = poll_redirect
+                        await on_progress(_build_progress(6, detail="تم التحقق بنجاح! المطالبة بالعرض..."))
+                        break
+                    elif poll_step == "error":
+                        err_ids = poll_data.get("errorIds", [])
+                        err_msg = f"SheerID رفض التحقق: {err_ids}"
+                        await on_progress(_build_progress(6, error=err_msg))
+                        result = {"success": False, "error": err_msg}
+                        return result
+                    else:
+                        remaining = (max_polls - poll_i - 1) * poll_interval
+                        await on_progress(_build_progress(6, detail=f"قيد المراجعة... ({remaining}ث متبقي)"))
+                else:
+                    # Timed out waiting for approval
+                    await on_progress(_build_progress(6, detail="التحقق لا زال قيد المراجعة — سيتم إكمال العملية عند الموافقة"))
             elif final_step == "error":
                 err_ids = data.get("errorIds", [])
                 err_msg = f"SheerID رفض التحقق: {err_ids}"
