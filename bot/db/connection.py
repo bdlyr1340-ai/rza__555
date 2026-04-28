@@ -1,54 +1,40 @@
-"""اتصال PostgreSQL باستخدام asyncpg + تشغيل المهاجرات."""
+"""Async PostgreSQL connection pool (asyncpg)."""
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Optional
+import pathlib
 
 import asyncpg
 
 from bot import config
 
 log = logging.getLogger(__name__)
-_pool: Optional[asyncpg.Pool] = None
+
+_pool: asyncpg.Pool | None = None
+
+MIGRATIONS_FILE = pathlib.Path(__file__).with_name("migrations.sql")
 
 
-async def init_pool() -> asyncpg.Pool:
+async def init_pool() -> None:
     global _pool
-    if _pool is not None:
-        return _pool
+    _pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=2, max_size=10)
+    log.info("PostgreSQL pool created")
 
-    log.info("Connecting to database...")
-    _pool = await asyncpg.create_pool(
-        dsn=config.DATABASE_URL,
-        min_size=1,
-        max_size=5,
-        command_timeout=30,
-    )
-
-    sql = (Path(__file__).parent / "migrations.sql").read_text(encoding="utf-8")
+    sql = MIGRATIONS_FILE.read_text(encoding="utf-8")
     async with _pool.acquire() as conn:
-        for idx, statement in enumerate(sql.split(";")):
-            lines = [l for l in statement.splitlines() if not l.strip().startswith("--")]
-            cleaned = "\n".join(lines).strip()
-            if cleaned:
-                try:
-                    await conn.execute(cleaned)
-                except Exception as exc:
-                    log.error("Migration statement %d failed: %s\n  SQL: %s", idx, exc, cleaned[:120])
-                    raise
-    log.info("Database is ready.")
+        await conn.execute(sql)
+    log.info("Database migrations applied")
+
+
+def get_pool() -> asyncpg.Pool:
+    if _pool is None:
+        raise RuntimeError("Database pool not initialised — call init_pool() first")
     return _pool
 
 
 async def close_pool() -> None:
     global _pool
-    if _pool is not None:
+    if _pool:
         await _pool.close()
         _pool = None
-
-
-def get_pool() -> asyncpg.Pool:
-    if _pool is None:
-        raise RuntimeError("Database pool is not initialised yet")
-    return _pool
+        log.info("PostgreSQL pool closed")
