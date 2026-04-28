@@ -1327,8 +1327,10 @@ async def verify_gemini_auto(
                         remaining = (max_polls - poll_i - 1) * poll_interval
                         await on_progress(_build_progress(6, detail=f"قيد المراجعة... ({remaining}ث متبقي)"))
                 else:
-                    # Timed out waiting for approval
-                    await on_progress(_build_progress(6, detail="التحقق لا زال قيد المراجعة — سيتم إكمال العملية عند الموافقة"))
+                    # Timed out waiting for approval — return failure so credit is refunded
+                    await on_progress(_build_progress(6, error="انتهت مهلة الانتظار — التحقق لا زال قيد المراجعة"))
+                    result = {"success": False, "error": f"SheerID لم يوافق خلال دقيقتين (الحالة: {final_step}) — جرّب مرة أخرى"}
+                    return result
             elif final_step == "error":
                 err_ids = data.get("errorIds", [])
                 err_msg = f"SheerID رفض التحقق: {err_ids}"
