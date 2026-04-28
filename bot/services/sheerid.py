@@ -768,13 +768,20 @@ async def _google_login_and_claim(
 ) -> bool:
     """Log into Google with Playwright and claim offer via redirect URL."""
     from playwright.async_api import async_playwright
+    from playwright_stealth import Stealth
+
+    _stealth_ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.6778.86 Safari/537.36"
+    )
+    stealth = Stealth(
+        navigator_user_agent_override=_stealth_ua,
+        navigator_vendor_override="Google Inc.",
+        navigator_platform_override="Win32",
+    )
 
     async with async_playwright() as pw:
-        _stealth_ua = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        )
         browser = await pw.chromium.launch(
             headless=True,
             args=[
@@ -782,6 +789,8 @@ async def _google_login_and_claim(
                 "--disable-blink-features=AutomationControlled",
                 "--disable-infobars",
                 "--disable-dev-shm-usage",
+                "--disable-extensions",
+                "--window-size=1280,800",
             ],
         )
         ctx = await browser.new_context(
@@ -789,18 +798,13 @@ async def _google_login_and_claim(
             viewport={"width": 1280, "height": 800},
             locale="en-US",
         )
+        await stealth.apply_stealth_async(ctx)
         page = await ctx.new_page()
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
-        """)
 
         try:
             # Step 5: Payment method — go to Google sign-in
             await on_progress(_build_progress(4))
-            await page.goto("https://accounts.google.com/", wait_until="domcontentloaded", timeout=30000)
+            await page.goto("https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin", wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(random.uniform(2, 4))
 
             # Enter email
@@ -976,6 +980,7 @@ async def verify_gemini_auto(
             return {"success": False, "error": f"مفتاح 2FA السري غير صالح: {exc}"}
 
     from playwright.async_api import async_playwright
+    from playwright_stealth import Stealth
 
     browser = None
     page = None
@@ -984,14 +989,19 @@ async def verify_gemini_auto(
     cdp_mode = False
     result: Dict[str, Any] = {"success": False, "error": "خطأ غير متوقع"}
 
+    _STEALTH_UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.6778.86 Safari/537.36"
+    )
+    stealth = Stealth(
+        navigator_user_agent_override=_STEALTH_UA,
+        navigator_vendor_override="Google Inc.",
+        navigator_platform_override="Win32",
+    )
+
     try:
         pw_instance = await async_playwright().start()
-
-        _STEALTH_UA = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        )
 
         # Try CDP connection to real Chrome first (avoids Google bot detection)
         try:
@@ -1003,6 +1013,7 @@ async def verify_gemini_auto(
             ctx_browser = await browser.new_context(
                 user_agent=_STEALTH_UA,
                 viewport={"width": 1280, "height": 800},
+                locale="en-US",
             )
             log.info("Using CDP connection to real Chrome browser (fresh context)")
         except Exception:
@@ -1025,76 +1036,81 @@ async def verify_gemini_auto(
                 locale="en-US",
             )
 
+        # Apply stealth to the context so ALL pages get stealth automatically
+        await stealth.apply_stealth_async(ctx_browser)
         page = await ctx_browser.new_page()
 
-        # Inject stealth scripts to hide automation fingerprints
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
-            const origQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (params) =>
-                params.name === 'notifications'
-                    ? Promise.resolve({state: Notification.permission})
-                    : origQuery(params);
-        """)
+        # Helper: enter email and click Next on current page
+        async def _enter_email_on_page(p, email_text):
+            email_el = p.locator('input[type="email"]')
+            if await email_el.count() == 0:
+                return False
+            await email_el.click()
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+            await email_el.type(email_text, delay=random.randint(50, 130))
+            await asyncio.sleep(random.uniform(0.8, 1.5))
+            nxt = p.locator("#identifierNext")
+            if await nxt.count() == 0:
+                nxt = p.get_by_role("button", name="Next")
+            await nxt.click()
+            await asyncio.sleep(random.uniform(4, 6))
+            return True
+
+        # Google sign-in URLs to try (in order of preference)
+        _SIGNIN_URLS = [
+            "https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin",
+            "https://accounts.google.com/ServiceLogin",
+            "https://accounts.google.com/",
+        ]
 
         # ── Step 1: الإيميل — enter email in Google ──
         await on_progress(_build_progress(0, detail=f"تسجيل الدخول بـ {gmail}..."))
-        await page.goto("https://accounts.google.com/", wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(random.uniform(2, 4))
 
-        # Check if email input is visible; Google may show a different page
-        email_input = page.locator('input[type="email"]')
-        if await email_input.count() == 0:
-            cur_url = page.url
-            title = await page.title()
-            log.warning("Google signin: no email input. URL=%s title=%s", cur_url, title)
-            await on_progress(_build_progress(0, error=f"صفحة Google غير متوقعة: {title}"))
-            result = {"success": False, "error": f"صفحة Google غير متوقعة: {title}"}
-            return result
+        signed_in = False
+        for attempt, signin_url in enumerate(_SIGNIN_URLS):
+            log.info("Google sign-in attempt %d with URL: %s", attempt + 1, signin_url)
 
-        await email_input.click()
-        await asyncio.sleep(random.uniform(0.3, 0.8))
-        await email_input.type(gmail, delay=random.randint(40, 120))
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-        next_btn = page.locator("#identifierNext")
-        if await next_btn.count() == 0:
-            next_btn = page.get_by_role("button", name="Next")
-        await next_btn.click()
-        await asyncio.sleep(random.uniform(4, 6))
+            if attempt > 0:
+                # Create fresh page for retries (clean cookies/state)
+                await page.close()
+                page = await ctx_browser.new_page()
+                await stealth.apply_stealth_async(page)
+                await asyncio.sleep(random.uniform(2, 4))
 
-        # Check for "Couldn't sign you in" page (Google bot detection)
-        cur_title = await page.title()
-        if "couldn" in cur_title.lower() and "sign" in cur_title.lower():
-            log.warning("Google 'Couldn't sign you in' detected after email. Retrying...")
+            await page.goto(signin_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(random.uniform(2, 4))
-            await page.goto("https://accounts.google.com/", wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(random.uniform(3, 5))
-            email_input2 = page.locator('input[type="email"]')
-            if await email_input2.count() > 0:
-                await email_input2.click()
-                await asyncio.sleep(random.uniform(0.3, 0.8))
-                await email_input2.type(gmail, delay=random.randint(60, 150))
-                await asyncio.sleep(random.uniform(1, 2))
-                next_btn2 = page.locator("#identifierNext")
-                if await next_btn2.count() == 0:
-                    next_btn2 = page.get_by_role("button", name="Next")
-                await next_btn2.click()
-                await asyncio.sleep(random.uniform(4, 6))
-            else:
-                log.warning("Retry failed: no email input on second attempt")
 
-        # Check for email error
-        email_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .Ekjuhf")
-        if await email_error.count() > 0:
-            err_text = await email_error.first.text_content()
-            if err_text and err_text.strip():
-                log.warning("Google email error: %s", err_text.strip())
-                await on_progress(_build_progress(0, error=f"خطأ: {err_text.strip()}"))
-                result = {"success": False, "error": f"خطأ الإيميل: {err_text.strip()}"}
-                return result
+            # Check if email input is visible
+            if not await _enter_email_on_page(page, gmail):
+                cur_url = page.url
+                title = await page.title()
+                log.warning("Attempt %d: no email input. URL=%s title=%s", attempt + 1, cur_url, title)
+                continue
+
+            # Check for "Couldn't sign you in" page
+            cur_title = await page.title()
+            if "couldn" in cur_title.lower() and "sign" in cur_title.lower():
+                log.warning("Attempt %d: 'Couldn't sign you in' (URL: %s)", attempt + 1, signin_url)
+                await on_progress(_build_progress(0, detail=f"محاولة {attempt + 1}: فشلت، جاري إعادة المحاولة..."))
+                continue
+
+            # Check for email error
+            email_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .Ekjuhf")
+            if await email_error.count() > 0:
+                err_text = await email_error.first.text_content()
+                if err_text and err_text.strip():
+                    log.warning("Google email error: %s", err_text.strip())
+                    await on_progress(_build_progress(0, error=f"خطأ: {err_text.strip()}"))
+                    result = {"success": False, "error": f"خطأ الإيميل: {err_text.strip()}"}
+                    return result
+
+            signed_in = True
+            break
+
+        if not signed_in:
+            await on_progress(_build_progress(0, error="فشل تسجيل الدخول — Google يرفض الاتصال من هذا السيرفر"))
+            result = {"success": False, "error": "فشل تسجيل الدخول (Couldn't sign you in) — Google يرفض الاتصال من هذا السيرفر. جرّب بعد فترة أو من سيرفر آخر."}
+            return result
 
         await on_progress(_build_progress(1, detail="تم قبول الإيميل، إدخال كلمة السر..."))
 
@@ -1111,23 +1127,17 @@ async def verify_gemini_auto(
                 cur_url, title, page_text[:500],
             )
 
-            # Handle "Couldn't sign you in" with a fresh retry
+            # Handle "Couldn't sign you in" — try one more fresh attempt
             if "couldn" in title.lower() and "sign" in title.lower():
-                log.info("Retrying sign-in from scratch after 'Couldn't sign you in'")
-                await asyncio.sleep(random.uniform(3, 6))
-                await page.goto("https://accounts.google.com/", wait_until="domcontentloaded", timeout=30000)
+                log.info("Password step: 'Couldn't sign you in' — trying fresh page")
+                await page.close()
+                page = await ctx_browser.new_page()
+                await stealth.apply_stealth_async(page)
                 await asyncio.sleep(random.uniform(3, 5))
-                retry_email = page.locator('input[type="email"]')
-                if await retry_email.count() > 0:
-                    await retry_email.click()
-                    await asyncio.sleep(random.uniform(0.5, 1))
-                    await retry_email.type(gmail, delay=random.randint(70, 150))
-                    await asyncio.sleep(random.uniform(1, 2))
-                    retry_next = page.locator("#identifierNext")
-                    if await retry_next.count() == 0:
-                        retry_next = page.get_by_role("button", name="Next")
-                    await retry_next.click()
-                    await asyncio.sleep(random.uniform(5, 7))
+                alt_url = "https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin"
+                await page.goto(alt_url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(random.uniform(3, 5))
+                if await _enter_email_on_page(page, gmail):
                     try:
                         pwd_input = page.locator('input[type="password"]:visible')
                         await pwd_input.wait_for(state="visible", timeout=15000)
