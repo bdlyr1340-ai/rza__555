@@ -117,7 +117,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         text = msg.text.strip()
 
         if gemini_step == "email":
-            if not re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", text):
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", text):
                 await msg.reply_text("❌ إيميل غير صالح. أرسل إيميل Gmail صحيح:")
                 return
             ctx.user_data["gemini_email"] = text
