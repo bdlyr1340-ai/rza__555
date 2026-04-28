@@ -781,10 +781,22 @@ async def _google_login_and_claim(
         navigator_platform_override="Win32",
     )
 
+    # Parse proxy from environment
+    _proxy_url = os.environ.get("PROXY_URL", "").strip()
+    _proxy_cfg = None
+    if _proxy_url:
+        from urllib.parse import urlparse
+        _p = urlparse(_proxy_url)
+        _proxy_cfg = {"server": f"{_p.scheme}://{_p.hostname}:{_p.port}"}
+        if _p.username:
+            _proxy_cfg["username"] = _p.username
+        if _p.password:
+            _proxy_cfg["password"] = _p.password
+
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
+        _launch_kwargs: Dict[str, Any] = {
+            "headless": True,
+            "args": [
                 "--no-sandbox",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-infobars",
@@ -792,7 +804,10 @@ async def _google_login_and_claim(
                 "--disable-extensions",
                 "--window-size=1280,800",
             ],
-        )
+        }
+        if _proxy_cfg:
+            _launch_kwargs["proxy"] = _proxy_cfg
+        browser = await pw.chromium.launch(**_launch_kwargs)
         ctx = await browser.new_context(
             user_agent=_stealth_ua,
             viewport={"width": 1280, "height": 800},
@@ -929,12 +944,14 @@ async def verify_gemini_auto(
     gmail: str = "",
     gmail_password: str = "",
     totp_secret: str = "",
+    user_id: int = 0,
 ) -> Dict[str, Any]:
     """Full auto Gemini/Google One verification with user's real Gmail.
 
     Args:
         totp_secret: The TOTP secret key (base32) — NOT the 6-digit code.
                      The bot generates the current code automatically.
+        user_id: Telegram user ID — used to track which card was assigned.
 
     Steps (9):
     1. الإيميل         — Google login: enter email
@@ -944,7 +961,7 @@ async def verify_gemini_auto(
     5. إضافة طريقة دفع  — SheerID submit student info
     6. التحقق من العرض   — SheerID upload document
     7. المطالبة بالعرض   — claim offer via redirect
-    8. معالجة الدفع      — confirm subscription
+    8. معالجة الدفع      — confirm subscription (+ auto payment card)
     9. اكتمال           — done
     """
     program_id = PROGRAM_IDS["google_one"]
@@ -1000,6 +1017,19 @@ async def verify_gemini_auto(
         navigator_platform_override="Win32",
     )
 
+    # Parse proxy from environment (supports http/https/socks5)
+    proxy_url = os.environ.get("PROXY_URL", "").strip()
+    proxy_cfg = None
+    if proxy_url:
+        from urllib.parse import urlparse
+        p = urlparse(proxy_url)
+        proxy_cfg = {"server": f"{p.scheme}://{p.hostname}:{p.port}"}
+        if p.username:
+            proxy_cfg["username"] = p.username
+        if p.password:
+            proxy_cfg["password"] = p.password
+        log.info("Using proxy: %s://%s:%s", p.scheme, p.hostname, p.port)
+
     try:
         pw_instance = await async_playwright().start()
 
@@ -1010,26 +1040,33 @@ async def verify_gemini_auto(
                 timeout=5000,
             )
             cdp_mode = True
-            ctx_browser = await browser.new_context(
-                user_agent=_STEALTH_UA,
-                viewport={"width": 1280, "height": 800},
-                locale="en-US",
-            )
+            ctx_opts: Dict[str, Any] = {
+                "user_agent": _STEALTH_UA,
+                "viewport": {"width": 1280, "height": 800},
+                "locale": "en-US",
+            }
+            if proxy_cfg:
+                ctx_opts["proxy"] = proxy_cfg
+            ctx_browser = await browser.new_context(**ctx_opts)
             log.info("Using CDP connection to real Chrome browser (fresh context)")
         except Exception:
             cdp_mode = False
             log.info("CDP not available, launching headless Chromium")
-            browser = await pw_instance.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--disable-dev-shm-usage",
-                    "--disable-extensions",
-                    "--window-size=1280,800",
-                ],
-            )
+            launch_args = [
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--disable-dev-shm-usage",
+                "--disable-extensions",
+                "--window-size=1280,800",
+            ]
+            launch_kwargs: Dict[str, Any] = {
+                "headless": True,
+                "args": launch_args,
+            }
+            if proxy_cfg:
+                launch_kwargs["proxy"] = proxy_cfg
+            browser = await pw_instance.chromium.launch(**launch_kwargs)
             ctx_browser = await browser.new_context(
                 user_agent=_STEALTH_UA,
                 viewport={"width": 1280, "height": 800},
@@ -1627,12 +1664,86 @@ async def verify_gemini_auto(
 
                 await on_progress(_build_progress(7, detail=f"تم المطالبة ({after_claim_title})، معالجة الدفع..."))
 
-                # ── Step 8: معالجة الدفع — confirm subscription ──
+                # ── Step 8: معالجة الدفع — auto-fill payment card if needed ──
                 await asyncio.sleep(2)
+
+                # Check if Google asks for a payment method (card form)
+                card_input = page.locator(
+                    'input[name="cardnumber"], input[autocomplete="cc-number"], '
+                    'input[id*="card"], input[aria-label*="Card number"], '
+                    'input[aria-label*="رقم البطاقة"]'
+                )
+                if await card_input.count() > 0:
+                    log.info("Payment card form detected — attempting auto-fill")
+                    from bot.db.models import get_next_card, mark_card_used
+                    payment_card = await get_next_card()
+                    if payment_card:
+                        try:
+                            await on_progress(_build_progress(8, detail="إدخال بطاقة الدفع..."))
+                            # Fill card number
+                            await card_input.first.click()
+                            await asyncio.sleep(random.uniform(0.3, 0.6))
+                            await card_input.first.type(payment_card["card_number"], delay=random.randint(30, 80))
+                            await asyncio.sleep(random.uniform(0.3, 0.6))
+
+                            # Fill card holder name
+                            name_input = page.locator(
+                                'input[name="ccname"], input[autocomplete="cc-name"], '
+                                'input[aria-label*="Name on card"], input[aria-label*="اسم"]'
+                            )
+                            if await name_input.count() > 0:
+                                await name_input.first.click()
+                                await asyncio.sleep(random.uniform(0.2, 0.4))
+                                await name_input.first.type(payment_card["card_holder"], delay=random.randint(30, 80))
+
+                            # Fill expiry
+                            expiry_input = page.locator(
+                                'input[name="ccexp"], input[autocomplete="cc-exp"], '
+                                'input[aria-label*="Expir"], input[aria-label*="انتهاء"]'
+                            )
+                            if await expiry_input.count() > 0:
+                                exp_str = f"{payment_card['expiry_month']:02d}/{payment_card['expiry_year'] % 100:02d}"
+                                await expiry_input.first.click()
+                                await asyncio.sleep(random.uniform(0.2, 0.4))
+                                await expiry_input.first.type(exp_str, delay=random.randint(30, 80))
+                            else:
+                                # Separate month/year fields
+                                month_input = page.locator('input[autocomplete="cc-exp-month"], select[autocomplete="cc-exp-month"]')
+                                year_input = page.locator('input[autocomplete="cc-exp-year"], select[autocomplete="cc-exp-year"]')
+                                if await month_input.count() > 0:
+                                    await month_input.first.fill(f"{payment_card['expiry_month']:02d}")
+                                if await year_input.count() > 0:
+                                    await year_input.first.fill(str(payment_card['expiry_year']))
+
+                            # Fill CVV
+                            cvv_input = page.locator(
+                                'input[name="cvc"], input[autocomplete="cc-csc"], '
+                                'input[aria-label*="CVC"], input[aria-label*="CVV"], '
+                                'input[aria-label*="Security code"]'
+                            )
+                            if await cvv_input.count() > 0:
+                                await cvv_input.first.click()
+                                await asyncio.sleep(random.uniform(0.2, 0.4))
+                                await cvv_input.first.type(payment_card["cvv"], delay=random.randint(30, 80))
+
+                            await asyncio.sleep(random.uniform(0.5, 1))
+
+                            # Mark card as used
+                            if user_id:
+                                await mark_card_used(payment_card["id"], user_id)
+                            log.info("Payment card #%d filled successfully", payment_card["id"])
+                        except Exception as card_exc:
+                            log.warning("Failed to fill payment card: %s", card_exc)
+                    else:
+                        log.warning("No available payment cards in database")
+                        await on_progress(_build_progress(8, detail="⚠️ لا توجد بطاقات متاحة — أضف بطاقة عبر /addcard"))
+
+                # Click confirm/subscribe buttons
                 for selector in [
                     "button:has-text('Subscribe')", "button:has-text('Confirm')",
                     "button:has-text('Accept')", "button:has-text('Done')",
                     "button:has-text('Start trial')", "button:has-text('Agree')",
+                    "button:has-text('Buy')", "button:has-text('Submit')",
                 ]:
                     btn = page.locator(selector).first
                     if await btn.count() > 0:
@@ -1645,7 +1756,6 @@ async def verify_gemini_auto(
                 final_url = page.url
                 final_title = await page.title()
                 log.info("Final state: URL=%s title=%s", final_url, final_title)
-                await page.screenshot(path="/tmp/gemini_final_page.png")
 
             except Exception as exc:
                 log.warning("Google claim redirect failed: %s", exc)
