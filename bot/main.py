@@ -79,6 +79,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("ban", h_admin.cmd_ban))
     app.add_handler(CommandHandler("unban", h_admin.cmd_unban))
     app.add_handler(CommandHandler("broadcast", h_admin.cmd_broadcast))
+    app.add_handler(CommandHandler("addcard", h_admin.cmd_addcard))
+    app.add_handler(CommandHandler("cards", h_admin.cmd_cards))
+    app.add_handler(CommandHandler("delcard", h_admin.cmd_delcard))
 
     # أزرار ورسائل
     app.add_handler(CallbackQueryHandler(h_start.on_button))

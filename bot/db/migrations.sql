@@ -35,3 +35,15 @@ CREATE TABLE IF NOT EXISTS referrals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id);
+
+CREATE TABLE IF NOT EXISTS payment_cards (
+    id SERIAL PRIMARY KEY,
+    card_number TEXT NOT NULL,
+    expiry TEXT NOT NULL,
+    cvv TEXT NOT NULL,
+    cardholder TEXT NOT NULL DEFAULT '',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    added_by BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
