@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 from bot import config
 from bot.db import models
 from bot.services import SERVICE_REGISTRY
+from bot.services.sheerid import verify_gemini_auto
 from bot.utils.keyboards import back_menu, main_menu
 
 log = logging.getLogger(__name__)
@@ -33,7 +34,14 @@ HELP_TEXT = (
 )
 
 
+def _clear_gemini_state(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear any in-progress Gemini credential flow state."""
+    for k in ("gemini_flow", "gemini_email", "gemini_password", "gemini_2fa"):
+        ctx.user_data.pop(k, None)
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    _clear_gemini_state(ctx)
     user = update.effective_user
     args = ctx.args or []
 
@@ -99,6 +107,9 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data or ""
 
     if data == "back":
+        # Clear any in-progress Gemini credential flow
+        for k in ("gemini_flow", "gemini_email", "gemini_password", "gemini_2fa"):
+            ctx.user_data.pop(k, None)
         row = await models.get_user(query.from_user.id) or {"credits": 0}
         await query.edit_message_text(
             WELCOME_TEXT.format(credits=row.get("credits", 0)),
@@ -140,6 +151,36 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not meta:
             await query.edit_message_text("❌ خدمة غير معروفة.", reply_markup=back_menu())
             return
+
+        # Auto-verify for Google One / Gemini — start conversation to collect credentials
+        if key == "google_one":
+            user = query.from_user
+            if await models.is_banned(user.id):
+                await query.edit_message_text("🚫 حسابك محظور.", reply_markup=back_menu())
+                return
+
+            row = await models.get_user(user.id)
+            if not row:
+                row = await models.upsert_user(user.id, user.username, user.first_name)
+            if row["credits"] <= 0:
+                await query.edit_message_text(
+                    "⚠️ رصيدك منتهي! ادعُ أصدقاء عبر /ref حتى تحصل على رصيد إضافي.",
+                    reply_markup=back_menu(),
+                )
+                return
+
+            # Start conversation — ask for email first
+            ctx.user_data.pop("pending_service", None)
+            ctx.user_data["gemini_flow"] = "email"
+            await query.edit_message_text(
+                "🤖 *جوجل ون / جيمناي — تحقق تلقائي*\n\n"
+                "📧 *الخطوة 1/3:* أرسل إيميل Gmail الخاص بك:",
+                parse_mode="Markdown",
+                reply_markup=back_menu(),
+            )
+            return
+
+        _clear_gemini_state(ctx)
         ctx.user_data["pending_service"] = key
         await query.edit_message_text(
             f"✅ اخترت: *{meta['label']}*\n\n"

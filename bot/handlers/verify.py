@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -9,10 +10,95 @@ from telegram.ext import ContextTypes
 from bot import config
 from bot.db import models
 from bot.services import SERVICE_REGISTRY, detect_service_from_url, extract_sheerid_url
-from bot.services.sheerid import run_verification
+from bot.services.sheerid import run_verification, verify_gemini_auto
 from bot.utils.keyboards import back_menu, main_menu
 
 log = logging.getLogger(__name__)
+
+
+async def _run_gemini_flow(msg, ctx, user) -> None:
+    """Execute the full Gemini auto-verification after all credentials collected."""
+    gmail = ctx.user_data.pop("gemini_email", "")
+    gmail_password = ctx.user_data.pop("gemini_password", "")
+    totp_secret = ctx.user_data.pop("gemini_2fa", "")
+    ctx.user_data.pop("gemini_flow", None)
+
+    meta = SERVICE_REGISTRY["google_one"]
+
+    if not await models.deduct_credit(user.id):
+        await msg.reply_text("⚠️ لم يتم خصم الرصيد.", reply_markup=back_menu())
+        return
+
+    ver_id = await models.log_verification_start(user.id, "google_one", "auto-gemini")
+    progress_msg = await msg.reply_text("⏳ جاري التحقق التلقائي...\n\n🤖 جوجل ون / جيمناي")
+
+    async def _update_progress(text: str) -> None:
+        try:
+            await progress_msg.edit_text(f"🤖 *جوجل ون / جيمناي*\n\n{text}", parse_mode="Markdown")
+        except Exception:
+            pass
+
+    try:
+        result = await verify_gemini_auto(
+            _update_progress,
+            gmail=gmail,
+            gmail_password=gmail_password,
+            totp_secret=totp_secret,
+        )
+    except Exception as exc:
+        log.exception("Gemini auto crashed ver_id=%s", ver_id)
+        await models.log_verification_finish(ver_id, user.id, success=False, error=str(exc))
+        await models.add_credits(user.id, 1)
+        await progress_msg.edit_text(
+            f"❌ حدث خطأ:\n{exc}\n\nتم إرجاع الرصيد.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    if result.get("success"):
+        await models.log_verification_finish(ver_id, user.id, success=True)
+        sheerid_step = result.get("step", "pending")
+        reply = (
+            "🎉 *تهانياً تم تفعيل جيمناي برو سنوي!*\n\n"
+            f"📧 Gmail: `{result.get('gmail', '—')}`\n"
+            f"👤 الشخص: `{result.get('student', '—')}`\n"
+            f"🎓 الجامعة: `{result.get('school', '—')}`\n"
+            f"📩 إيميل التحقق: `{result.get('email', '—')}`\n"
+            f"🔗 رقم التحقق: `{result.get('verificationId', '—')}`\n"
+            f"\nحالة SheerID: {sheerid_step}\n"
+        )
+        await progress_msg.edit_text(reply, parse_mode="Markdown", reply_markup=main_menu())
+    else:
+        await models.log_verification_finish(ver_id, user.id, success=False, error=result.get("error"))
+        await models.add_credits(user.id, 1)
+        await progress_msg.edit_text(
+            f"❌ فشل التحقق:\n{result.get('error', 'خطأ غير معروف')}\n\nتم إرجاع الرصيد.",
+            reply_markup=main_menu(),
+        )
+
+    extra_lines = ""
+    if not result.get("success") and result.get("error"):
+        extra_lines += f"السبب: {result['error']}\n"
+    if result.get("step"):
+        extra_lines += f"حالة SheerID: {result['step']}\n"
+    if result.get("verificationId"):
+        extra_lines += f"رقم التحقق: {result['verificationId']}\n"
+    if result.get("redirect"):
+        extra_lines += f"رابط العرض: {result['redirect'][:80]}\n"
+    admin_text = (
+        "📥 طلب تحقق جديد (تلقائي)\n\n"
+        f"المستخدم: {user.id}\n"
+        f"اليوزر: @{user.username or '-'}\n"
+        f"الخدمة: {meta['label']}\n"
+        f"رقم الطلب: {ver_id}\n"
+        f"النتيجة: {'نجاح ✅' if result.get('success') else 'فشل ❌'}\n"
+        f"{extra_lines}"
+    )
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await ctx.bot.send_message(admin_id, admin_text)
+        except Exception as e:
+            log.warning("Failed to notify admin %s: %s", admin_id, e)
 
 
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -25,6 +111,59 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text("🚫 حسابك محظور.")
         return
 
+    # Handle Gemini conversation flow
+    gemini_step = ctx.user_data.get("gemini_flow")
+    if gemini_step:
+        text = msg.text.strip()
+
+        if gemini_step == "email":
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", text):
+                await msg.reply_text("❌ إيميل غير صالح. أرسل إيميل Gmail صحيح:")
+                return
+            ctx.user_data["gemini_email"] = text
+            ctx.user_data["gemini_flow"] = "password"
+            await msg.reply_text(
+                f"✅ الإيميل: `{text}`\n\n"
+                "🔑 *الخطوة 2/3:* أرسل كلمة مرور حساب Google:",
+                parse_mode="Markdown",
+            )
+            # Delete the email message for privacy
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            return
+
+        if gemini_step == "password":
+            ctx.user_data["gemini_password"] = text
+            ctx.user_data["gemini_flow"] = "2fa"
+            await msg.reply_text(
+                "✅ تم حفظ كلمة المرور\n\n"
+                "🔐 *الخطوة 3/3:* أرسل مفتاح 2FA السري (Secret Key):\n\n"
+                "المفتاح يكون نص مثل: `JBSWY3DPEHPK3PXP`\n"
+                "تلاقيه في إعدادات Google Authenticator\n\n"
+                "_إذا ما عندك 2FA أرسل: skip_",
+                parse_mode="Markdown",
+            )
+            # Delete the password message for privacy
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            return
+
+        if gemini_step == "2fa":
+            totp_secret = text.strip() if text.lower() != "skip" else ""
+            ctx.user_data["gemini_2fa"] = totp_secret
+            # Delete the 2FA message for privacy
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            # All credentials collected — run the flow
+            await _run_gemini_flow(msg, ctx, user)
+            return
+
     url = extract_sheerid_url(msg.text)
     if not url:
         await msg.reply_text(
@@ -33,7 +172,9 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    service_key = ctx.user_data.pop("pending_service", None) or detect_service_from_url(url)
+    pending = ctx.user_data.pop("pending_service", None)
+    url_service = detect_service_from_url(url)
+    service_key = pending or url_service
     if not service_key or service_key not in SERVICE_REGISTRY:
         await msg.reply_text(
             "❓ ما گدرت أحدد نوع الخدمة من الرابط. اختار الخدمة من القائمة:",
