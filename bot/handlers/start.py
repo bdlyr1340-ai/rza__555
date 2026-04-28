@@ -34,7 +34,14 @@ HELP_TEXT = (
 )
 
 
+def _clear_gemini_state(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear any in-progress Gemini credential flow state."""
+    for k in ("gemini_flow", "gemini_email", "gemini_password", "gemini_2fa"):
+        ctx.user_data.pop(k, None)
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    _clear_gemini_state(ctx)
     user = update.effective_user
     args = ctx.args or []
 
@@ -163,6 +170,7 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 return
 
             # Start conversation — ask for email first
+            ctx.user_data.pop("pending_service", None)
             ctx.user_data["gemini_flow"] = "email"
             await query.edit_message_text(
                 "🤖 *جوجل ون / جيمناي — تحقق تلقائي*\n\n"
@@ -172,6 +180,7 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
+        _clear_gemini_state(ctx)
         ctx.user_data["pending_service"] = key
         await query.edit_message_text(
             f"✅ اخترت: *{meta['label']}*\n\n"

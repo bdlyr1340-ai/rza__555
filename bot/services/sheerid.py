@@ -974,6 +974,7 @@ async def verify_gemini_auto(
             log.info("Using CDP connection to real Chrome browser (fresh context)")
         except Exception:
             # Fall back to launching headless Chromium
+            cdp_mode = False
             log.info("CDP not available, launching headless Chromium")
             browser = await pw_instance.chromium.launch(
                 headless=True,
