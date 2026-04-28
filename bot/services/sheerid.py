@@ -19,6 +19,90 @@ log = logging.getLogger(__name__)
 SHEERID_API = "https://services.sheerid.com/rest/v2"
 SHEERID_BASE = "https://services.sheerid.com"
 
+
+# ---------------------------------------------------------------------------
+# Cloud browser helpers (BrowserBase / Browserless)
+# ---------------------------------------------------------------------------
+
+async def _connect_cloud_browser(pw_instance):
+    """Connect to a cloud browser provider via CDP.
+
+    Returns (browser, context, cleanup_coro_func) or raises if not configured.
+    The cleanup function should be called in finally to end the cloud session.
+    """
+    provider = os.environ.get("BROWSER_PROVIDER", "").lower().strip()
+
+    if provider == "browserbase":
+        api_key = os.environ.get("BROWSERBASE_API_KEY", "")
+        project_id = os.environ.get("BROWSERBASE_PROJECT_ID", "")
+        if not api_key:
+            raise ValueError("BROWSERBASE_API_KEY not set")
+
+        try:
+            from browserbase import Browserbase
+            bb = Browserbase(api_key=api_key)
+            create_kwargs: Dict[str, Any] = {}
+            if project_id:
+                create_kwargs["project_id"] = project_id
+            session = bb.sessions.create(**create_kwargs)
+            connect_url = session.connect_url
+            session_id = session.id
+            log.info("BrowserBase session created: %s", session_id)
+        except ImportError:
+            # Fallback: construct connect URL manually (no SDK)
+            import httpx as _hx
+            headers = {"x-bb-api-key": api_key, "Content-Type": "application/json"}
+            payload: Dict[str, Any] = {}
+            if project_id:
+                payload["projectId"] = project_id
+            resp = _hx.post(
+                "https://api.browserbase.com/v1/sessions",
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            session_id = data["id"]
+            connect_url = data.get("connectUrl", f"wss://connect.browserbase.com?apiKey={api_key}&sessionId={session_id}")
+            log.info("BrowserBase session created (httpx): %s", session_id)
+
+        browser = await pw_instance.chromium.connect_over_cdp(connect_url, timeout=30_000)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+
+        async def _cleanup():
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+        return browser, context, _cleanup
+
+    elif provider == "browserless":
+        token = os.environ.get("BROWSERLESS_TOKEN", "")
+        base_url = os.environ.get("BROWSERLESS_URL", "wss://chrome.browserless.io")
+        if not token:
+            raise ValueError("BROWSERLESS_TOKEN not set")
+
+        ws_url = f"{base_url}?token={token}"
+        log.info("Connecting to Browserless: %s", base_url)
+        browser = await pw_instance.chromium.connect_over_cdp(ws_url, timeout=30_000)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+        )
+
+        async def _cleanup():
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+        return browser, context, _cleanup
+
+    else:
+        raise ValueError(f"Unknown BROWSER_PROVIDER: {provider!r}")
+
 MIN_DELAY_MS = 300
 MAX_DELAY_MS = 800
 
@@ -1217,6 +1301,8 @@ async def verify_gemini_auto(
     if not _all_proxies:
         _all_proxies = [None]  # type: ignore[list-item]  # no proxy available
 
+    _cloud_cleanup = None  # async callable set when using cloud browser
+
     async def _cleanup_browser(br, ctx, pw, is_cdp):
         if is_cdp and ctx:
             try:
@@ -1234,98 +1320,164 @@ async def verify_gemini_auto(
             except Exception:
                 pass
 
-    # ── Outer retry loop: try different proxies on timeout ──
-    for proxy_attempt_idx in range(_MAX_PROXY_RETRIES):
-        proxy_url = _all_proxies[proxy_attempt_idx % len(_all_proxies)] if _all_proxies[0] is not None else None
-        proxy_cfg = _build_proxy_cfg(proxy_url)
+    # ── Try cloud browser first (BrowserBase / Browserless) ──
+    _browser_provider = os.environ.get("BROWSER_PROVIDER", "").lower().strip()
+    _cloud_connected = False
 
-        if proxy_attempt_idx > 0:
-            await on_progress(_build_progress(0, detail=f"إعادة المحاولة ببروكسي مختلف ({proxy_attempt_idx + 1}/{_MAX_PROXY_RETRIES})..."))
-            await asyncio.sleep(random.uniform(2, 5))
-
-        if proxy_cfg:
-            log.info("Proxy attempt %d/%d: %s", proxy_attempt_idx + 1, _MAX_PROXY_RETRIES, proxy_cfg["server"])
-        else:
-            log.info("Proxy attempt %d/%d: no proxy", proxy_attempt_idx + 1, _MAX_PROXY_RETRIES)
-
-        # Reset browser state for this attempt
-        browser = None
-        page = None
-        pw_instance = None
-        ctx_browser = None
-        cdp_mode = False
-
+    if _browser_provider in ("browserbase", "browserless"):
+        log.info("Attempting cloud browser via %s", _browser_provider)
+        await on_progress(_build_progress(0, detail=f"الاتصال بـ {_browser_provider}..."))
         try:
             pw_instance = await async_playwright().start()
-
-            cdp_mode = False
-            # Skip CDP when proxy is configured — CDP ignores per-context proxy settings
-            if not proxy_cfg:
+            browser, ctx_browser, _cloud_cleanup = await _connect_cloud_browser(pw_instance)
+            cdp_mode = True
+            await stealth.apply_stealth_async(ctx_browser)
+            page = await ctx_browser.new_page()
+            # Quick connectivity check
+            try:
+                resp = await page.goto("https://www.google.com/generate_204", wait_until="commit", timeout=20_000)
+                if resp and resp.status != 204:
+                    log.warning("Cloud browser connectivity check returned status %d", resp.status)
+            except Exception as conn_exc:
+                log.warning("Cloud browser connectivity failed: %s", conn_exc)
+                raise conn_exc
+            _cloud_connected = True
+            log.info("Cloud browser connected successfully via %s", _browser_provider)
+        except Exception as cloud_exc:
+            log.warning("Cloud browser (%s) failed: %s — falling back to local", _browser_provider, cloud_exc)
+            await _cleanup_browser(browser, ctx_browser, pw_instance, cdp_mode)
+            if _cloud_cleanup:
                 try:
-                    browser = await pw_instance.chromium.connect_over_cdp(
-                        os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
-                        timeout=5000,
-                    )
-                    cdp_mode = True
+                    await _cloud_cleanup()
+                except Exception:
+                    pass
+                _cloud_cleanup = None
+            browser = None
+            page = None
+            pw_instance = None
+            ctx_browser = None
+            cdp_mode = False
+
+    # ── Fallback: local browser with proxy rotation ──
+    if not _cloud_connected:
+        for proxy_attempt_idx in range(_MAX_PROXY_RETRIES):
+            proxy_url = _all_proxies[proxy_attempt_idx % len(_all_proxies)] if _all_proxies[0] is not None else None
+            proxy_cfg = _build_proxy_cfg(proxy_url)
+
+            if proxy_attempt_idx > 0:
+                await on_progress(_build_progress(0, detail=f"إعادة المحاولة ببروكسي مختلف ({proxy_attempt_idx + 1}/{_MAX_PROXY_RETRIES})..."))
+                await asyncio.sleep(random.uniform(2, 5))
+
+            if proxy_cfg:
+                log.info("Proxy attempt %d/%d: %s", proxy_attempt_idx + 1, _MAX_PROXY_RETRIES, proxy_cfg["server"])
+            else:
+                log.info("Proxy attempt %d/%d: no proxy", proxy_attempt_idx + 1, _MAX_PROXY_RETRIES)
+
+            # Reset browser state for this attempt
+            browser = None
+            page = None
+            pw_instance = None
+            ctx_browser = None
+            cdp_mode = False
+
+            try:
+                pw_instance = await async_playwright().start()
+
+                cdp_mode = False
+                # Skip CDP when proxy is configured — CDP ignores per-context proxy settings
+                if not proxy_cfg:
+                    try:
+                        browser = await pw_instance.chromium.connect_over_cdp(
+                            os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
+                            timeout=5000,
+                        )
+                        cdp_mode = True
+                        ctx_browser = await browser.new_context(
+                            user_agent=_STEALTH_UA,
+                            viewport={"width": 1280, "height": 800},
+                            locale="en-US",
+                        )
+                        log.info("Using CDP connection to real Chrome browser (no proxy)")
+                    except Exception:
+                        log.info("CDP not available, will launch headless Chromium")
+
+                if not cdp_mode:
+                    log.info("Launching headless Chromium with proxy: %s", proxy_cfg.get("server") if proxy_cfg else "none")
+                    launch_args = [
+                        "--no-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--disable-dev-shm-usage",
+                        "--disable-extensions",
+                        "--window-size=1280,800",
+                    ]
+                    launch_kwargs: Dict[str, Any] = {
+                        "headless": True,
+                        "args": launch_args,
+                    }
+                    if proxy_cfg:
+                        launch_kwargs["proxy"] = proxy_cfg
+                    browser = await pw_instance.chromium.launch(**launch_kwargs)
                     ctx_browser = await browser.new_context(
                         user_agent=_STEALTH_UA,
                         viewport={"width": 1280, "height": 800},
                         locale="en-US",
                     )
-                    log.info("Using CDP connection to real Chrome browser (no proxy)")
-                except Exception:
-                    log.info("CDP not available, will launch headless Chromium")
 
-            if not cdp_mode:
-                log.info("Launching headless Chromium with proxy: %s", proxy_cfg.get("server") if proxy_cfg else "none")
-                launch_args = [
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--disable-dev-shm-usage",
-                    "--disable-extensions",
-                    "--window-size=1280,800",
-                ]
-                launch_kwargs: Dict[str, Any] = {
-                    "headless": True,
-                    "args": launch_args,
-                }
-                if proxy_cfg:
-                    launch_kwargs["proxy"] = proxy_cfg
-                browser = await pw_instance.chromium.launch(**launch_kwargs)
-                ctx_browser = await browser.new_context(
-                    user_agent=_STEALTH_UA,
-                    viewport={"width": 1280, "height": 800},
-                    locale="en-US",
-                )
+                # Apply stealth to the context so ALL pages get stealth automatically
+                await stealth.apply_stealth_async(ctx_browser)
+                page = await ctx_browser.new_page()
 
-            # Apply stealth to the context so ALL pages get stealth automatically
-            await stealth.apply_stealth_async(ctx_browser)
-            page = await ctx_browser.new_page()
+                # ── Quick connectivity pre-check: lightweight fetch ──
+                try:
+                    resp = await page.goto("https://www.google.com/generate_204", wait_until="commit", timeout=20_000)
+                    if resp and resp.status != 204:
+                        log.warning("Connectivity check returned status %d", resp.status)
+                except Exception as conn_exc:
+                    log.warning("Connectivity pre-check failed (%s) — switching proxy", conn_exc)
+                    await _cleanup_browser(browser, ctx_browser, pw_instance, cdp_mode)
+                    continue  # try next proxy
 
-            # ── Quick connectivity pre-check: lightweight fetch ──
-            try:
-                resp = await page.goto("https://www.google.com/generate_204", wait_until="commit", timeout=20_000)
-                if resp and resp.status != 204:
-                    log.warning("Connectivity check returned status %d", resp.status)
-            except Exception as conn_exc:
-                log.warning("Connectivity pre-check failed (%s) — switching proxy", conn_exc)
+            except Exception as launch_exc:
+                log.warning("Browser launch failed on proxy attempt %d: %s", proxy_attempt_idx + 1, launch_exc)
                 await _cleanup_browser(browser, ctx_browser, pw_instance, cdp_mode)
-                continue  # try next proxy
+                continue
 
-        except Exception as launch_exc:
-            log.warning("Browser launch failed on proxy attempt %d: %s", proxy_attempt_idx + 1, launch_exc)
-            await _cleanup_browser(browser, ctx_browser, pw_instance, cdp_mode)
-            continue
-
-        # Browser is up and connected — proceed with Google sign-in
-        break
-    else:
-        # All proxy attempts exhausted at launch/connectivity stage
-        await on_progress(_build_progress(0, error="فشل الاتصال بـ Google — جميع البروكسيات لا تعمل"))
-        return {"success": False, "error": "فشل الاتصال بـ Google بعد تجربة جميع البروكسيات المتاحة"}
+            # Browser is up and connected — proceed with Google sign-in
+            break
+        else:
+            # All proxy attempts exhausted at launch/connectivity stage
+            await on_progress(_build_progress(0, error="فشل الاتصال بـ Google — جميع البروكسيات لا تعمل"))
+            return {"success": False, "error": "فشل الاتصال بـ Google بعد تجربة جميع البروكسيات المتاحة"}
 
     try:
+        # ── Try saved cookies first (skip login entirely) ──
+        _cookies_worked = False
+        try:
+            from bot.db import models as _db
+            saved = await _db.get_google_cookies(gmail)
+            if saved and saved["cookies"]:
+                log.info("Found saved cookies for %s, attempting session reuse", gmail)
+                await on_progress(_build_progress(0, detail="جاري تجربة الجلسة المحفوظة..."))
+                try:
+                    await ctx_browser.add_cookies(saved["cookies"])
+                    await page.goto("https://myaccount.google.com/", wait_until="domcontentloaded", timeout=30_000)
+                    await asyncio.sleep(2)
+                    cur_url = page.url
+                    if "accounts.google.com/signin" in cur_url or "accounts.google.com/v3/signin" in cur_url:
+                        log.info("Saved cookies expired for %s — falling back to login", gmail)
+                        await _db.delete_google_cookies(gmail)
+                        await ctx_browser.clear_cookies()
+                    else:
+                        log.info("Cookie session reuse succeeded for %s (URL: %s)", gmail, cur_url[:80])
+                        await on_progress(_build_progress(3, detail="تم تسجيل الدخول بالجلسة المحفوظة! ⚡"))
+                        _cookies_worked = True
+                except Exception as cookie_exc:
+                    log.warning("Cookie injection failed: %s", cookie_exc)
+                    await ctx_browser.clear_cookies()
+        except Exception as db_exc:
+            log.warning("Failed to load cookies from DB: %s", db_exc)
+
         # Helper: enter email and click Next on current page
         async def _enter_email_on_page(p, email_text):
             email_el = p.locator('input[type="email"]')
@@ -1349,12 +1501,15 @@ async def verify_gemini_auto(
             "https://accounts.google.com/",
         ]
 
-        # ── Step 1: الإيميل — enter email in Google ──
-        await on_progress(_build_progress(0, detail=f"تسجيل الدخول بـ {gmail}..."))
+        if _cookies_worked:
+            log.info("Skipping Google login steps 1-3 (cookies valid)")
+        else:
+            # ── Step 1: الإيميل — enter email in Google ──
+            await on_progress(_build_progress(0, detail=f"تسجيل الدخول بـ {gmail}..."))
 
-        signed_in = False
+        signed_in = _cookies_worked
         last_goto_error = None
-        for attempt, signin_url in enumerate(_SIGNIN_URLS):
+        for attempt, signin_url in enumerate(_SIGNIN_URLS if not _cookies_worked else []):
             log.info("Google sign-in attempt %d with URL: %s", attempt + 1, signin_url)
 
             if attempt > 0:
@@ -1409,332 +1564,350 @@ async def verify_gemini_auto(
                 result = {"success": False, "error": "فشل تسجيل الدخول (Couldn't sign you in) — Google يرفض الاتصال من هذا السيرفر. جرّب بعد فترة أو من سيرفر آخر."}
             return result
 
-        await on_progress(_build_progress(1, detail="تم قبول الإيميل، إدخال كلمة السر..."))
+        if not _cookies_worked:
+            await on_progress(_build_progress(1, detail="تم قبول الإيميل، إدخال كلمة السر..."))
 
-        # ── Step 2: كلمة السر — enter password ──
-        pwd_input = page.locator('input[type="password"]:visible')
-        try:
-            await pwd_input.wait_for(state="visible", timeout=20000)
-        except Exception:
-            cur_url = page.url
-            title = await page.title()
-            page_text = await page.inner_text("body")
-            log.warning(
-                "Google pwd page not found. URL=%s title=%s body_snippet=%s",
-                cur_url, title, page_text[:500],
-            )
+        if _cookies_worked:
+            log.info("Steps 2-3 skipped (cookies session reuse)")
 
-            # Handle "Couldn't sign you in" — try one more fresh attempt
-            if "couldn" in title.lower() and "sign" in title.lower():
-                log.info("Password step: 'Couldn't sign you in' — trying fresh page")
-                await page.close()
-                page = await ctx_browser.new_page()
-                await stealth.apply_stealth_async(page)
-                await asyncio.sleep(random.uniform(3, 5))
-                alt_url = "https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin"
-                await page.goto(alt_url, wait_until="domcontentloaded", timeout=_GOTO_TIMEOUT)
-                await asyncio.sleep(random.uniform(3, 5))
-                if await _enter_email_on_page(page, gmail):
-                    try:
-                        pwd_input = page.locator('input[type="password"]:visible')
-                        await pwd_input.wait_for(state="visible", timeout=15000)
-                    except Exception:
-                        retry_title = await page.title()
-                        detail = f"الصفحة: {retry_title} | الرابط: {page.url[:80]}"
-                        await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور بعد إعادة المحاولة", detail=detail))
-                        result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {retry_title}"}
-                        return result
-                else:
-                    await on_progress(_build_progress(0, error="فشل إعادة المحاولة"))
-                    result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
-                    return result
-            else:
-                # Check specific Google pages
-                if "find your Google Account" in page_text or "العثور على" in page_text:
-                    await on_progress(_build_progress(0, error="الإيميل غير موجود في Google"))
-                    result = {"success": False, "error": "الإيميل غير موجود في Google"}
-                    return result
-                if "captcha" in page_text.lower() or "robot" in page_text.lower():
-                    await on_progress(_build_progress(1, error="Google يطلب CAPTCHA — جرّب لاحقاً"))
-                    result = {"success": False, "error": "Google يطلب CAPTCHA — جرّب بعد فترة"}
-                    return result
-                if "verify" in cur_url.lower() or "challenge" in cur_url.lower():
-                    await on_progress(_build_progress(1, error="Google يطلب تحقق أمني إضافي"))
-                    result = {"success": False, "error": f"Google يطلب تحقق أمني إضافي ({title})"}
-                    return result
-
-                # Try alternative password selectors
-                alt_pwd = page.locator('input[name="Passwd"], input[name="password"], input[aria-label="Password"]')
-                if await alt_pwd.count() > 0:
-                    pwd_input = alt_pwd.first
-                    log.info("Found password input via alternative selector")
-                else:
-                    detail = f"الصفحة: {title} | الرابط: {cur_url[:80]}"
-                    await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور", detail=detail))
-                    result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
-                    return result
-
-        await pwd_input.click()
-        await asyncio.sleep(random.uniform(0.3, 0.8))
-        await pwd_input.type(gmail_password, delay=random.randint(30, 90))
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-        pwd_next = page.locator("#passwordNext")
-        if await pwd_next.count() == 0:
-            pwd_next = page.get_by_role("button", name="Next")
-        await pwd_next.click()
-        await asyncio.sleep(random.uniform(4, 6))
-
-        # Check for wrong password error
-        pwd_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab")
-        if await pwd_error.count() > 0:
-            err_text = await pwd_error.first.text_content()
-            if err_text and err_text.strip() and ("password" in err_text.lower() or "كلمة" in err_text):
-                log.warning("Google password error: %s", err_text.strip())
-                await on_progress(_build_progress(1, error=f"خطأ: {err_text.strip()}"))
-                result = {"success": False, "error": f"كلمة المرور خاطئة: {err_text.strip()}"}
-                return result
-
-        # Check page after password entry
-        cur_url = page.url
-        if "signin/rejected" in cur_url.lower():
-            title = await page.title()
-            log.warning("Google rejected sign-in: URL=%s", cur_url)
-            await on_progress(_build_progress(1, error=f"Google رفض تسجيل الدخول: {title}"))
-            result = {"success": False, "error": f"Google رفض تسجيل الدخول: {title}"}
-            return result
-
-        await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
-
-        # ── Step 3: المصادقة الثنائية — handle 2FA ──
-        await asyncio.sleep(2)
-
-        # Google 2FA comes in many forms; try to detect and handle each
-        is_2fa_page = "challenge" in page.url.lower()
-
-        # Look for TOTP / code input (multiple selectors for different Google UIs)
-        totp_input = page.locator(
-            'input[type="tel"]:visible, '
-            'input[id="totpPin"]:visible, '
-            'input[name="totpPin"]:visible, '
-            'input[aria-label*="code"i]:visible, '
-            'input[aria-label*="رمز"]:visible'
-        )
-
-        if await totp_input.count() > 0:
-            if totp_obj:
-                totp_code = totp_obj.now()  # generate fresh code right before use
-                await totp_input.first.fill(totp_code)
-                # Find and click Next button
-                totp_next = page.locator("#totpNext")
-                if await totp_next.count() == 0:
-                    totp_next = page.get_by_role("button", name="Next")
-                if await totp_next.count() > 0:
-                    await totp_next.click()
-                await asyncio.sleep(4)
-
-                # Check for 2FA error
-                totp_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
-                if await totp_error.count() > 0:
-                    err_text = await totp_error.first.text_content()
-                    if err_text and err_text.strip():
-                        log.warning("Google 2FA error: %s", err_text.strip())
-                        await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
-                        result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
-                        return result
-
-                await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
-            else:
-                await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل مفتاح 2FA السري"))
-                result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
-                return result
-        elif is_2fa_page:
-            # 2FA page but no TOTP input — phone prompt, security key, etc.
-            title = await page.title()
-            page_text = await page.inner_text("body")
-            log.warning("Google 2FA page without TOTP input. URL=%s title=%s body=%s", page.url, title, page_text[:300])
-            await on_progress(_build_progress(2, detail="جاري البحث عن طريقة Authenticator..."))
-
-            # Always try "Try another way" first to switch to Authenticator
+        if not _cookies_worked:
+            # ── Step 2: كلمة السر — enter password ──
+            pwd_input = page.locator('input[type="password"]:visible')
             try:
-                try_another = page.locator(
-                    "button:has-text('Try another way'), "
-                    "a:has-text('Try another way'), "
-                    "button:has-text('طريقة أخرى'), "
-                    "a:has-text('طريقة أخرى'), "
-                    "button:has-text('try another way')"
+                await pwd_input.wait_for(state="visible", timeout=20000)
+            except Exception:
+                cur_url = page.url
+                title = await page.title()
+                page_text = await page.inner_text("body")
+                log.warning(
+                    "Google pwd page not found. URL=%s title=%s body_snippet=%s",
+                    cur_url, title, page_text[:500],
                 )
-                if await try_another.count() > 0:
-                    log.info("Clicking 'Try another way'")
-                    await try_another.first.click()
-                    # Wait for page to settle after click
-                    try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(2)
-
-                    # Log what options are available (with short timeout)
-                    try:
-                        options_text = await page.inner_text("body", timeout=5000)
-                        log.info("2FA options page: %s", options_text[:500])
-                    except Exception:
-                        options_text = ""
-                        log.warning("Could not read 2FA options page text")
-
-                    # Log all available 2FA options for debugging
-                    try:
-                        all_2fa = await page.locator("li").all_text_contents()
-                        log.info("2FA options after 'Try another way': %s", [o.strip()[:60] for o in all_2fa if o.strip()][:8])
-                    except Exception:
-                        pass
-
-                    # Look for "Google Authenticator" or TOTP-specific option
-                    auth_option = page.locator(
-                        "li:has-text('Authenticator'), "
-                        "li:has-text('Google Authenticator'), "
-                        "div[role='link']:has-text('Authenticator'), "
-                        "div[data-challengetype='6'], "
-                        "li:has-text('authenticator app'), "
-                        "li:has-text('Enter a code from')"
-                    )
-                    if await auth_option.count() > 0:
-                        auth_text = await auth_option.first.text_content()
-                        log.info("Selecting authenticator option: '%s'", auth_text)
-                        await auth_option.first.click()
+    
+                # Handle "Couldn't sign you in" — try one more fresh attempt
+                if "couldn" in title.lower() and "sign" in title.lower():
+                    log.info("Password step: 'Couldn't sign you in' — trying fresh page")
+                    await page.close()
+                    page = await ctx_browser.new_page()
+                    await stealth.apply_stealth_async(page)
+                    await asyncio.sleep(random.uniform(3, 5))
+                    alt_url = "https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin"
+                    await page.goto(alt_url, wait_until="domcontentloaded", timeout=_GOTO_TIMEOUT)
+                    await asyncio.sleep(random.uniform(3, 5))
+                    if await _enter_email_on_page(page, gmail):
                         try:
-                            await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                            pwd_input = page.locator('input[type="password"]:visible')
+                            await pwd_input.wait_for(state="visible", timeout=15000)
                         except Exception:
-                            pass
-                        await asyncio.sleep(2)
-
-                        # Now look for TOTP input
-                        totp_input2 = page.locator(
-                            'input[type="tel"]:visible, '
-                            'input[id="totpPin"]:visible, '
-                            'input[name="totpPin"]:visible'
-                        )
-                        if await totp_input2.count() > 0 and totp_obj:
-                            totp_code2 = totp_obj.now()
-                            log.info("Entering TOTP code via alternate path")
-                            await totp_input2.first.fill(totp_code2)
-                            totp_next2 = page.locator("#totpNext")
-                            if await totp_next2.count() == 0:
-                                totp_next2 = page.get_by_role("button", name="Next")
-                            if await totp_next2.count() > 0:
-                                await totp_next2.click()
-                            await asyncio.sleep(4)
-
-                            # Check for 2FA error after submission
-                            totp_err = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
-                            if await totp_err.count() > 0:
-                                err_text = await totp_err.first.text_content()
-                                if err_text and err_text.strip():
-                                    log.warning("Google 2FA error (alt): %s", err_text.strip())
-                                    await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
-                                    result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
-                                    return result
-
-                            await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
-                        elif totp_obj:
-                            await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
-                            result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
-                            return result
-                        else:
-                            await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أرسل مفتاح 2FA السري"))
-                            result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
+                            retry_title = await page.title()
+                            detail = f"الصفحة: {retry_title} | الرابط: {page.url[:80]}"
+                            await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور بعد إعادة المحاولة", detail=detail))
+                            result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {retry_title}"}
                             return result
                     else:
-                        # No authenticator option found
-                        try:
-                            all_options = await page.locator("li").all_text_contents()
-                            log.warning("No authenticator option. Available: %s", all_options[:5])
-                        except Exception:
-                            log.warning("No authenticator option and couldn't list alternatives")
-                        await on_progress(_build_progress(2, error="Google Authenticator غير مفعّل على هذا الحساب"))
-                        result = {"success": False, "error": "Google Authenticator غير مفعّل — فعّله من إعدادات الحساب أولاً"}
+                        await on_progress(_build_progress(0, error="فشل إعادة المحاولة"))
+                        result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
                         return result
                 else:
-                    # No "Try another way" — we may already be on the selection page
-                    log.info("No 'Try another way' button — checking if already on selection page")
-                    # Log all available 2FA options for debugging
-                    try:
-                        all_2fa = await page.locator("li").all_text_contents()
-                        log.info("2FA options on selection page: %s", [o.strip()[:60] for o in all_2fa if o.strip()][:8])
-                    except Exception:
-                        pass
-
-                    auth_option_direct = page.locator(
-                        "li:has-text('Authenticator'), "
-                        "li:has-text('Google Authenticator'), "
-                        "div[role='link']:has-text('Authenticator'), "
-                        "div[data-challengetype='6'], "
-                        "li:has-text('authenticator app'), "
-                        "li:has-text('Enter a code from')"
+                    # Check specific Google pages
+                    if "find your Google Account" in page_text or "العثور على" in page_text:
+                        await on_progress(_build_progress(0, error="الإيميل غير موجود في Google"))
+                        result = {"success": False, "error": "الإيميل غير موجود في Google"}
+                        return result
+                    if "captcha" in page_text.lower() or "robot" in page_text.lower():
+                        await on_progress(_build_progress(1, error="Google يطلب CAPTCHA — جرّب لاحقاً"))
+                        result = {"success": False, "error": "Google يطلب CAPTCHA — جرّب بعد فترة"}
+                        return result
+                    if "verify" in cur_url.lower() or "challenge" in cur_url.lower():
+                        await on_progress(_build_progress(1, error="Google يطلب تحقق أمني إضافي"))
+                        result = {"success": False, "error": f"Google يطلب تحقق أمني إضافي ({title})"}
+                        return result
+    
+                    # Try alternative password selectors
+                    alt_pwd = page.locator('input[name="Passwd"], input[name="password"], input[aria-label="Password"]')
+                    if await alt_pwd.count() > 0:
+                        pwd_input = alt_pwd.first
+                        log.info("Found password input via alternative selector")
+                    else:
+                        detail = f"الصفحة: {title} | الرابط: {cur_url[:80]}"
+                        await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور", detail=detail))
+                        result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
+                        return result
+    
+            await pwd_input.click()
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+            await pwd_input.type(gmail_password, delay=random.randint(30, 90))
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+            pwd_next = page.locator("#passwordNext")
+            if await pwd_next.count() == 0:
+                pwd_next = page.get_by_role("button", name="Next")
+            await pwd_next.click()
+            await asyncio.sleep(random.uniform(4, 6))
+    
+            # Check for wrong password error
+            pwd_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab")
+            if await pwd_error.count() > 0:
+                err_text = await pwd_error.first.text_content()
+                if err_text and err_text.strip() and ("password" in err_text.lower() or "كلمة" in err_text):
+                    log.warning("Google password error: %s", err_text.strip())
+                    await on_progress(_build_progress(1, error=f"خطأ: {err_text.strip()}"))
+                    result = {"success": False, "error": f"كلمة المرور خاطئة: {err_text.strip()}"}
+                    return result
+    
+            # Check page after password entry
+            cur_url = page.url
+            if "signin/rejected" in cur_url.lower():
+                title = await page.title()
+                log.warning("Google rejected sign-in: URL=%s", cur_url)
+                await on_progress(_build_progress(1, error=f"Google رفض تسجيل الدخول: {title}"))
+                result = {"success": False, "error": f"Google رفض تسجيل الدخول: {title}"}
+                return result
+    
+            await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
+    
+            # ── Step 3: المصادقة الثنائية — handle 2FA ──
+            await asyncio.sleep(2)
+    
+            # Google 2FA comes in many forms; try to detect and handle each
+            is_2fa_page = "challenge" in page.url.lower()
+    
+            # Look for TOTP / code input (multiple selectors for different Google UIs)
+            totp_input = page.locator(
+                'input[type="tel"]:visible, '
+                'input[id="totpPin"]:visible, '
+                'input[name="totpPin"]:visible, '
+                'input[aria-label*="code"i]:visible, '
+                'input[aria-label*="رمز"]:visible'
+            )
+    
+            if await totp_input.count() > 0:
+                if totp_obj:
+                    totp_code = totp_obj.now()  # generate fresh code right before use
+                    await totp_input.first.fill(totp_code)
+                    # Find and click Next button
+                    totp_next = page.locator("#totpNext")
+                    if await totp_next.count() == 0:
+                        totp_next = page.get_by_role("button", name="Next")
+                    if await totp_next.count() > 0:
+                        await totp_next.click()
+                    await asyncio.sleep(4)
+    
+                    # Check for 2FA error
+                    totp_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
+                    if await totp_error.count() > 0:
+                        err_text = await totp_error.first.text_content()
+                        if err_text and err_text.strip():
+                            log.warning("Google 2FA error: %s", err_text.strip())
+                            await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
+                            result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
+                            return result
+    
+                    await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
+                else:
+                    await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل مفتاح 2FA السري"))
+                    result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
+                    return result
+            elif is_2fa_page:
+                # 2FA page but no TOTP input — phone prompt, security key, etc.
+                title = await page.title()
+                page_text = await page.inner_text("body")
+                log.warning("Google 2FA page without TOTP input. URL=%s title=%s body=%s", page.url, title, page_text[:300])
+                await on_progress(_build_progress(2, detail="جاري البحث عن طريقة Authenticator..."))
+    
+                # Always try "Try another way" first to switch to Authenticator
+                try:
+                    try_another = page.locator(
+                        "button:has-text('Try another way'), "
+                        "a:has-text('Try another way'), "
+                        "button:has-text('طريقة أخرى'), "
+                        "a:has-text('طريقة أخرى'), "
+                        "button:has-text('try another way')"
                     )
-                    if await auth_option_direct.count() > 0:
-                        auth_text = await auth_option_direct.first.text_content()
-                        log.info("Found authenticator on selection page: '%s'", auth_text)
-                        await auth_option_direct.first.click()
+                    if await try_another.count() > 0:
+                        log.info("Clicking 'Try another way'")
+                        await try_another.first.click()
+                        # Wait for page to settle after click
                         try:
                             await page.wait_for_load_state("domcontentloaded", timeout=10000)
                         except Exception:
                             pass
                         await asyncio.sleep(2)
-
-                        # Now look for TOTP input
-                        totp_input3 = page.locator(
-                            'input[type="tel"]:visible, '
-                            'input[id="totpPin"]:visible, '
-                            'input[name="totpPin"]:visible'
-                        )
-                        if await totp_input3.count() > 0 and totp_obj:
-                            totp_code3 = totp_obj.now()
-                            log.info("Entering TOTP code via selection page path")
-                            await totp_input3.first.fill(totp_code3)
-                            totp_next3 = page.locator("#totpNext")
-                            if await totp_next3.count() == 0:
-                                totp_next3 = page.get_by_role("button", name="Next")
-                            if await totp_next3.count() > 0:
-                                await totp_next3.click()
-                            await asyncio.sleep(4)
-
-                            totp_err3 = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
-                            if await totp_err3.count() > 0:
-                                err_text = await totp_err3.first.text_content()
-                                if err_text and err_text.strip():
-                                    log.warning("Google 2FA error (selection): %s", err_text.strip())
-                                    await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
-                                    result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
-                                    return result
-
-                            await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
-                        elif totp_obj:
-                            await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
-                            result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
-                            return result
-                        else:
-                            await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أرسل مفتاح 2FA السري"))
-                            result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
-                            return result
-                    else:
-                        log.warning("No 'Try another way' and no authenticator option on page")
+    
+                        # Log what options are available (with short timeout)
                         try:
-                            all_opts = await page.locator("li").all_text_contents()
-                            log.warning("Available 2FA options: %s", all_opts[:5])
+                            options_text = await page.inner_text("body", timeout=5000)
+                            log.info("2FA options page: %s", options_text[:500])
+                        except Exception:
+                            options_text = ""
+                            log.warning("Could not read 2FA options page text")
+    
+                        # Log all available 2FA options for debugging
+                        try:
+                            all_2fa = await page.locator("li").all_text_contents()
+                            log.info("2FA options after 'Try another way': %s", [o.strip()[:60] for o in all_2fa if o.strip()][:8])
                         except Exception:
                             pass
-                        await on_progress(_build_progress(2, error="Google Authenticator غير مفعّل على هذا الحساب"))
-                        result = {"success": False, "error": "Google Authenticator غير مفعّل — فعّله من إعدادات الحساب أولاً"}
-                        return result
-            except Exception as taw_exc:
-                log.warning("Error in 'Try another way' flow: %s", taw_exc)
-                await on_progress(_build_progress(2, error=f"خطأ في التحول لـ Authenticator: {taw_exc}"))
-                result = {"success": False, "error": f"فشل التحول لـ Google Authenticator: {taw_exc}"}
-                return result
-        else:
-            await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح! (بدون 2FA)"))
-
+    
+                        # Look for "Google Authenticator" or TOTP-specific option
+                        auth_option = page.locator(
+                            "li:has-text('Authenticator'), "
+                            "li:has-text('Google Authenticator'), "
+                            "div[role='link']:has-text('Authenticator'), "
+                            "div[data-challengetype='6'], "
+                            "li:has-text('authenticator app'), "
+                            "li:has-text('Enter a code from')"
+                        )
+                        if await auth_option.count() > 0:
+                            auth_text = await auth_option.first.text_content()
+                            log.info("Selecting authenticator option: '%s'", auth_text)
+                            await auth_option.first.click()
+                            try:
+                                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(2)
+    
+                            # Now look for TOTP input
+                            totp_input2 = page.locator(
+                                'input[type="tel"]:visible, '
+                                'input[id="totpPin"]:visible, '
+                                'input[name="totpPin"]:visible'
+                            )
+                            if await totp_input2.count() > 0 and totp_obj:
+                                totp_code2 = totp_obj.now()
+                                log.info("Entering TOTP code via alternate path")
+                                await totp_input2.first.fill(totp_code2)
+                                totp_next2 = page.locator("#totpNext")
+                                if await totp_next2.count() == 0:
+                                    totp_next2 = page.get_by_role("button", name="Next")
+                                if await totp_next2.count() > 0:
+                                    await totp_next2.click()
+                                await asyncio.sleep(4)
+    
+                                # Check for 2FA error after submission
+                                totp_err = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
+                                if await totp_err.count() > 0:
+                                    err_text = await totp_err.first.text_content()
+                                    if err_text and err_text.strip():
+                                        log.warning("Google 2FA error (alt): %s", err_text.strip())
+                                        await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
+                                        result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
+                                        return result
+    
+                                await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
+                            elif totp_obj:
+                                await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
+                                result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
+                                return result
+                            else:
+                                await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أرسل مفتاح 2FA السري"))
+                                result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
+                                return result
+                        else:
+                            # No authenticator option found
+                            try:
+                                all_options = await page.locator("li").all_text_contents()
+                                log.warning("No authenticator option. Available: %s", all_options[:5])
+                            except Exception:
+                                log.warning("No authenticator option and couldn't list alternatives")
+                            await on_progress(_build_progress(2, error="Google Authenticator غير مفعّل على هذا الحساب"))
+                            result = {"success": False, "error": "Google Authenticator غير مفعّل — فعّله من إعدادات الحساب أولاً"}
+                            return result
+                    else:
+                        # No "Try another way" — we may already be on the selection page
+                        log.info("No 'Try another way' button — checking if already on selection page")
+                        # Log all available 2FA options for debugging
+                        try:
+                            all_2fa = await page.locator("li").all_text_contents()
+                            log.info("2FA options on selection page: %s", [o.strip()[:60] for o in all_2fa if o.strip()][:8])
+                        except Exception:
+                            pass
+    
+                        auth_option_direct = page.locator(
+                            "li:has-text('Authenticator'), "
+                            "li:has-text('Google Authenticator'), "
+                            "div[role='link']:has-text('Authenticator'), "
+                            "div[data-challengetype='6'], "
+                            "li:has-text('authenticator app'), "
+                            "li:has-text('Enter a code from')"
+                        )
+                        if await auth_option_direct.count() > 0:
+                            auth_text = await auth_option_direct.first.text_content()
+                            log.info("Found authenticator on selection page: '%s'", auth_text)
+                            await auth_option_direct.first.click()
+                            try:
+                                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(2)
+    
+                            # Now look for TOTP input
+                            totp_input3 = page.locator(
+                                'input[type="tel"]:visible, '
+                                'input[id="totpPin"]:visible, '
+                                'input[name="totpPin"]:visible'
+                            )
+                            if await totp_input3.count() > 0 and totp_obj:
+                                totp_code3 = totp_obj.now()
+                                log.info("Entering TOTP code via selection page path")
+                                await totp_input3.first.fill(totp_code3)
+                                totp_next3 = page.locator("#totpNext")
+                                if await totp_next3.count() == 0:
+                                    totp_next3 = page.get_by_role("button", name="Next")
+                                if await totp_next3.count() > 0:
+                                    await totp_next3.click()
+                                await asyncio.sleep(4)
+    
+                                totp_err3 = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
+                                if await totp_err3.count() > 0:
+                                    err_text = await totp_err3.first.text_content()
+                                    if err_text and err_text.strip():
+                                        log.warning("Google 2FA error (selection): %s", err_text.strip())
+                                        await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
+                                        result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
+                                        return result
+    
+                                await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
+                            elif totp_obj:
+                                await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
+                                result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
+                                return result
+                            else:
+                                await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أرسل مفتاح 2FA السري"))
+                                result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
+                                return result
+                        else:
+                            log.warning("No 'Try another way' and no authenticator option on page")
+                            try:
+                                all_opts = await page.locator("li").all_text_contents()
+                                log.warning("Available 2FA options: %s", all_opts[:5])
+                            except Exception:
+                                pass
+                            await on_progress(_build_progress(2, error="Google Authenticator غير مفعّل على هذا الحساب"))
+                            result = {"success": False, "error": "Google Authenticator غير مفعّل — فعّله من إعدادات الحساب أولاً"}
+                            return result
+                except Exception as taw_exc:
+                    log.warning("Error in 'Try another way' flow: %s", taw_exc)
+                    await on_progress(_build_progress(2, error=f"خطأ في التحول لـ Authenticator: {taw_exc}"))
+                    result = {"success": False, "error": f"فشل التحول لـ Google Authenticator: {taw_exc}"}
+                    return result
+            else:
+                await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح! (بدون 2FA)"))
+    
         log.info("Google login succeeded for %s", gmail)
+
+        # ── Save cookies for future reuse ──
+        if not _cookies_worked:
+            try:
+                from bot.db import models as _db
+                all_cookies = await ctx_browser.cookies()
+                google_cookies = [c for c in all_cookies if ".google.com" in c.get("domain", "")]
+                if google_cookies:
+                    await _db.save_google_cookies(gmail, google_cookies, _STEALTH_UA)
+                    log.info("Saved %d Google cookies for %s", len(google_cookies), gmail)
+                    await on_progress(_build_progress(3, detail="تم حفظ الجلسة للاستخدام المستقبلي ⚡"))
+            except Exception as save_exc:
+                log.warning("Failed to save cookies: %s", save_exc)
 
         # ── Step 4: طريقة الدفع — SheerID create verification ──
         await on_progress(_build_progress(3, detail="جاري إنشاء التحقق في SheerID..."))
@@ -2078,8 +2251,14 @@ async def verify_gemini_auto(
         return result
 
     finally:
+        # Cloud browser cleanup
+        if _cloud_cleanup:
+            try:
+                await _cloud_cleanup()
+            except Exception:
+                pass
         # In CDP mode, close the incognito context (not the shared browser)
-        if cdp_mode and ctx_browser:
+        elif cdp_mode and ctx_browser:
             try:
                 await ctx_browser.close()
             except Exception:
