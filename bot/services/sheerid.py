@@ -1427,16 +1427,16 @@ async def verify_gemini_auto(
             if final_step == "success" and redirect_url:
                 await on_progress(_build_progress(6, detail="تم التحقق بنجاح! المطالبة بالعرض..."))
             elif final_step in ("docReview", "pending"):
-                # Poll SheerID until verification is approved or rejected (max 5 minutes)
+                # Quick poll (60s) then return pending for background polling
                 await on_progress(_build_progress(6, detail=f"التحقق قيد المراجعة ({final_step})... انتظار الموافقة"))
-                max_polls = 30
+                quick_polls = 6
                 poll_interval = 10
-                for poll_i in range(max_polls):
+                for poll_i in range(quick_polls):
                     await asyncio.sleep(poll_interval)
                     poll_data, poll_status = await _api_request(client, "GET", f"/verification/{vid}")
                     poll_step = poll_data.get("currentStep", "unknown")
                     poll_redirect = poll_data.get("redirectUrl", "")
-                    log.info("SheerID poll %d/%d: step=%s redirect=%s", poll_i + 1, max_polls, poll_step, bool(poll_redirect))
+                    log.info("SheerID quick poll %d/%d: step=%s redirect=%s", poll_i + 1, quick_polls, poll_step, bool(poll_redirect))
 
                     if poll_step == "success" and poll_redirect:
                         final_step = poll_step
@@ -1450,12 +1450,22 @@ async def verify_gemini_auto(
                         result = {"success": False, "error": err_msg}
                         return result
                     else:
-                        remaining = (max_polls - poll_i - 1) * poll_interval
+                        remaining = (quick_polls - poll_i - 1) * poll_interval
                         await on_progress(_build_progress(6, detail=f"قيد المراجعة... ({remaining}ث متبقي)"))
                 else:
-                    # Timed out waiting for approval — return failure so credit is refunded
-                    await on_progress(_build_progress(6, error="انتهت مهلة الانتظار — التحقق لا زال قيد المراجعة"))
-                    result = {"success": False, "error": f"SheerID لم يوافق خلال 5 دقائق (الحالة: {final_step}) — جرّب مرة أخرى"}
+                    # Return pending — handler will start background polling
+                    await on_progress(_build_progress(6, detail="المستندات تحت المراجعة — سيتم إشعارك عند الموافقة"))
+                    result = {
+                        "success": False,
+                        "pending": True,
+                        "error": "المستندات تحت المراجعة — سيتم إشعارك تلقائياً",
+                        "student": f"{first} {last}",
+                        "email": student_email,
+                        "gmail": gmail,
+                        "school": uni["name"],
+                        "step": final_step,
+                        "verificationId": vid,
+                    }
                     return result
             elif final_step == "error":
                 err_ids = data.get("errorIds", [])
@@ -1579,6 +1589,160 @@ async def verify_gemini_auto(
 
     finally:
         # In CDP mode, close the incognito context (not the shared browser)
+        if cdp_mode and ctx_browser:
+            try:
+                await ctx_browser.close()
+            except Exception:
+                pass
+        elif browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if pw_instance:
+            try:
+                await pw_instance.stop()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Background SheerID polling
+# ---------------------------------------------------------------------------
+
+async def poll_sheerid_until_approved(vid: str, max_minutes: int = 30, poll_interval: int = 30) -> Dict[str, Any]:
+    """Poll SheerID verification status in background until approved/rejected.
+
+    Returns dict with 'approved', 'redirect_url', or 'error'.
+    """
+    max_polls = (max_minutes * 60) // poll_interval
+    log.info("Starting background SheerID poll for vid=%s (max %d min, %d polls)", vid[:12], max_minutes, max_polls)
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for poll_i in range(max_polls):
+            await asyncio.sleep(poll_interval)
+            try:
+                data, status = await _api_request(client, "GET", f"/verification/{vid}")
+                step = data.get("currentStep", "unknown")
+                redirect = data.get("redirectUrl", "")
+                log.info("BG poll %d/%d vid=%s: step=%s", poll_i + 1, max_polls, vid[:12], step)
+
+                if step == "success" and redirect:
+                    return {"approved": True, "redirect_url": redirect, "step": step}
+                elif step == "error":
+                    err_ids = data.get("errorIds", [])
+                    return {"approved": False, "error": f"SheerID رفض التحقق: {err_ids}", "step": step}
+            except Exception as exc:
+                log.warning("BG poll error vid=%s: %s", vid[:12], exc)
+
+    return {"approved": False, "error": f"SheerID لم يوافق خلال {max_minutes} دقيقة", "step": "timeout"}
+
+
+async def claim_google_offer(gmail: str, gmail_password: str, totp_secret: str, redirect_url: str) -> Dict[str, Any]:
+    """Open browser, login to Google, and claim the offer via redirect URL."""
+    from playwright.async_api import async_playwright
+
+    pw_instance = None
+    browser = None
+    ctx_browser = None
+    cdp_mode = False
+
+    try:
+        pw_instance = await async_playwright().start()
+
+        try:
+            browser = await pw_instance.chromium.connect_over_cdp(
+                os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
+                timeout=5000,
+            )
+            cdp_mode = True
+            ctx_browser = await browser.new_context()
+        except Exception:
+            cdp_mode = False
+            browser = await pw_instance.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
+            ctx_browser = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800},
+            )
+
+        page = await ctx_browser.new_page()
+
+        # Login to Google
+        await page.goto("https://accounts.google.com/signin", wait_until="networkidle", timeout=30000)
+        await asyncio.sleep(1)
+
+        email_input = page.locator('input[type="email"]')
+        await email_input.fill(gmail)
+        next_btn = page.locator("#identifierNext")
+        if await next_btn.count() == 0:
+            next_btn = page.get_by_role("button", name="Next")
+        await next_btn.click()
+        await asyncio.sleep(3)
+
+        pwd_input = page.locator('input[type="password"]:visible')
+        await pwd_input.wait_for(state="visible", timeout=15000)
+        await pwd_input.fill(gmail_password)
+        pwd_next = page.locator("#passwordNext")
+        if await pwd_next.count() == 0:
+            pwd_next = page.get_by_role("button", name="Next")
+        await pwd_next.click()
+        await asyncio.sleep(3)
+
+        # Handle 2FA if needed
+        if totp_secret:
+            import pyotp
+            totp_input = page.locator('input[type="tel"]:visible, input[id="totpPin"]:visible')
+            if await totp_input.count() > 0:
+                clean = totp_secret.replace(" ", "").strip().upper()
+                code = pyotp.TOTP(clean).now()
+                await totp_input.first.fill(code)
+                totp_next = page.locator("#totpNext")
+                if await totp_next.count() == 0:
+                    totp_next = page.get_by_role("button", name="Next")
+                if await totp_next.count() > 0:
+                    await totp_next.click()
+                await asyncio.sleep(3)
+
+        # Navigate to offer page and claim
+        log.info("Claiming offer at: %s", redirect_url)
+        await page.goto(redirect_url, wait_until="networkidle", timeout=30000)
+        await asyncio.sleep(3)
+
+        for selector in [
+            "button:has-text('Claim')", "button:has-text('Redeem')",
+            "button:has-text('Get')", "button:has-text('Continue')",
+            "button:has-text('Start')", "button:has-text('Activate')",
+            "a:has-text('Claim')", "a:has-text('Redeem')",
+        ]:
+            btn = page.locator(selector).first
+            if await btn.count() > 0:
+                await btn.click()
+                await asyncio.sleep(4)
+                break
+
+        # Confirm
+        await asyncio.sleep(2)
+        for selector in [
+            "button:has-text('Subscribe')", "button:has-text('Confirm')",
+            "button:has-text('Accept')", "button:has-text('Done')",
+            "button:has-text('Start trial')", "button:has-text('Agree')",
+        ]:
+            btn = page.locator(selector).first
+            if await btn.count() > 0:
+                await btn.click()
+                await asyncio.sleep(3)
+                break
+
+        return {"claimed": True}
+
+    except Exception as exc:
+        log.warning("claim_google_offer failed: %s", exc)
+        return {"claimed": False, "error": str(exc)}
+
+    finally:
         if cdp_mode and ctx_browser:
             try:
                 await ctx_browser.close()

@@ -1,6 +1,7 @@
 """معالجة رسائل الروابط وتشغيل التحقق الفعلي عبر SheerID."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -10,10 +11,88 @@ from telegram.ext import ContextTypes
 from bot import config
 from bot.db import models
 from bot.services import SERVICE_REGISTRY, detect_service_from_url, extract_sheerid_url
-from bot.services.sheerid import run_verification, verify_gemini_auto
+from bot.services.sheerid import run_verification, verify_gemini_auto, poll_sheerid_until_approved, claim_google_offer
 from bot.utils.keyboards import back_menu, main_menu
 
 log = logging.getLogger(__name__)
+
+
+async def _background_sheerid_poll(
+    bot, user_id: int, username: str, ver_id: int, vid: str,
+    gmail: str, gmail_password: str, totp_secret: str,
+    result_info: dict,
+) -> None:
+    """Background task: poll SheerID, claim offer on approval, notify user."""
+    try:
+        poll_result = await poll_sheerid_until_approved(vid, max_minutes=30, poll_interval=30)
+
+        if poll_result.get("approved"):
+            redirect_url = poll_result["redirect_url"]
+            log.info("BG: SheerID approved vid=%s, claiming offer...", vid[:12])
+
+            # Claim the Google offer
+            claim_result = await claim_google_offer(gmail, gmail_password, totp_secret, redirect_url)
+
+            if claim_result.get("claimed"):
+                await models.log_verification_finish(ver_id, user_id, success=True)
+                await bot.send_message(
+                    user_id,
+                    "🎉 *تهانياً تم تفعيل جيمناي برو سنوي!*\n\n"
+                    f"📧 Gmail: `{gmail}`\n"
+                    f"👤 الشخص: `{result_info.get('student', '—')}`\n"
+                    f"🎓 الجامعة: `{result_info.get('school', '—')}`\n"
+                    f"🔗 رقم التحقق: `{vid}`\n\n"
+                    "✅ تم التفعيل بنجاح!",
+                    parse_mode="Markdown",
+                )
+            else:
+                await models.log_verification_finish(ver_id, user_id, success=True)
+                await bot.send_message(
+                    user_id,
+                    "✅ *SheerID وافق على التحقق!*\n\n"
+                    f"🔗 رابط العرض:\n`{redirect_url}`\n\n"
+                    "افتح الرابط في المتصفح لتفعيل العرض يدوياً.",
+                    parse_mode="Markdown",
+                )
+        else:
+            # SheerID rejected or timed out
+            await models.log_verification_finish(ver_id, user_id, success=False, error=poll_result.get("error"))
+            await models.add_credits(user_id, 1)
+            await bot.send_message(
+                user_id,
+                f"❌ *فشل التحقق:*\n{poll_result.get('error', 'خطأ غير معروف')}\n\n"
+                "تم إرجاع الرصيد.",
+                parse_mode="Markdown",
+            )
+
+        # Notify admins
+        extra = f"حالة SheerID: {poll_result.get('step', '—')}\nرقم التحقق: {vid}\n"
+        admin_text = (
+            "📥 نتيجة تحقق (خلفي)\n\n"
+            f"المستخدم: {user_id}\n"
+            f"اليوزر: @{username or '-'}\n"
+            f"الخدمة: 🤖 جوجل ون / جيمناي\n"
+            f"رقم الطلب: {ver_id}\n"
+            f"النتيجة: {'نجاح ✅' if poll_result.get('approved') else 'فشل ❌'}\n"
+            f"{extra}"
+        )
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, admin_text)
+            except Exception as e:
+                log.warning("Failed to notify admin %s: %s", admin_id, e)
+
+    except Exception as exc:
+        log.exception("Background SheerID poll crashed: %s", exc)
+        await models.log_verification_finish(ver_id, user_id, success=False, error=str(exc))
+        await models.add_credits(user_id, 1)
+        try:
+            await bot.send_message(
+                user_id,
+                f"❌ حدث خطأ أثناء المراجعة:\n{exc}\n\nتم إرجاع الرصيد.",
+            )
+        except Exception:
+            pass
 
 
 async def _run_gemini_flow(msg, ctx, user) -> None:
@@ -68,6 +147,32 @@ async def _run_gemini_flow(msg, ctx, user) -> None:
             f"\nحالة SheerID: {sheerid_step}\n"
         )
         await progress_msg.edit_text(reply, parse_mode="Markdown", reply_markup=main_menu())
+    elif result.get("pending"):
+        # SheerID is reviewing documents — start background polling
+        vid = result.get("verificationId", "")
+        await progress_msg.edit_text(
+            "⏳ *المستندات تحت المراجعة*\n\n"
+            "SheerID يراجع المستندات الآن. سيتم إشعارك تلقائياً عند الموافقة.\n"
+            f"رقم التحقق: `{vid}`\n\n"
+            "⏱ المراجعة قد تستغرق حتى 30 دقيقة.",
+            parse_mode="Markdown",
+            reply_markup=main_menu(),
+        )
+        # Start background task
+        asyncio.create_task(
+            _background_sheerid_poll(
+                bot=ctx.bot,
+                user_id=user.id,
+                username=user.username,
+                ver_id=ver_id,
+                vid=vid,
+                gmail=gmail,
+                gmail_password=gmail_password,
+                totp_secret=totp_secret,
+                result_info=result,
+            )
+        )
+        # Don't refund credits yet — wait for background result
     else:
         await models.log_verification_finish(ver_id, user.id, success=False, error=result.get("error"))
         await models.add_credits(user.id, 1)
