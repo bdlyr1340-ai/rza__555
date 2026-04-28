@@ -770,30 +770,50 @@ async def _google_login_and_claim(
     from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
+        _stealth_ua = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        )
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--disable-dev-shm-usage",
+            ],
+        )
         ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
+            user_agent=_stealth_ua,
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
         )
         page = await ctx.new_page()
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+        """)
 
         try:
             # Step 5: Payment method — go to Google sign-in
             await on_progress(_build_progress(4))
-            await page.goto("https://accounts.google.com/signin", wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(1)
+            await page.goto("https://accounts.google.com/", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(random.uniform(2, 4))
 
             # Enter email
             email_input = page.locator('input[type="email"]')
-            await email_input.fill(gmail)
+            await email_input.click()
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+            await email_input.type(gmail, delay=random.randint(40, 120))
+            await asyncio.sleep(random.uniform(0.5, 1.5))
             next_btn = page.locator("#identifierNext")
             if await next_btn.count() == 0:
                 next_btn = page.get_by_role("button", name="Next")
             await next_btn.click()
-            await asyncio.sleep(3)
+            await asyncio.sleep(random.uniform(3, 5))
 
             await on_progress(_build_progress(5))
 
@@ -811,19 +831,24 @@ async def _google_login_and_claim(
             try:
                 await pwd_input.wait_for(state="visible", timeout=15000)
             except Exception:
-                # Check if there's an error message
+                title = await page.title()
                 page_text = await page.content()
                 if "find your Google Account" in page_text or "العثور على" in page_text:
                     await on_progress(_build_progress(4, error="الإيميل غير موجود في Google"))
                     return False
-                await on_progress(_build_progress(5, error="فشل الوصول لصفحة كلمة المرور"))
+                if "couldn" in title.lower() and "sign" in title.lower():
+                    log.warning("Google 'Couldn't sign you in' in claim flow")
+                await on_progress(_build_progress(5, error=f"فشل الوصول لصفحة كلمة المرور — {title}"))
                 return False
-            await pwd_input.fill(gmail_password)
+            await pwd_input.click()
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+            await pwd_input.type(gmail_password, delay=random.randint(30, 90))
+            await asyncio.sleep(random.uniform(0.5, 1))
             pwd_next = page.locator("#passwordNext")
             if await pwd_next.count() == 0:
                 pwd_next = page.get_by_role("button", name="Next")
             await pwd_next.click()
-            await asyncio.sleep(3)
+            await asyncio.sleep(random.uniform(3, 5))
 
             # Check for error (wrong password)
             error_el = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab")
@@ -847,7 +872,7 @@ async def _google_login_and_claim(
 
             # Step 7-8: Check offer & Claim — navigate to redirect URL
             await on_progress(_build_progress(7))
-            await page.goto(redirect_url, wait_until="networkidle", timeout=30000)
+            await page.goto(redirect_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
 
             # Try to click any "Claim" / "Get offer" / "Continue" button
@@ -962,6 +987,12 @@ async def verify_gemini_auto(
     try:
         pw_instance = await async_playwright().start()
 
+        _STEALTH_UA = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        )
+
         # Try CDP connection to real Chrome first (avoids Google bot detection)
         try:
             browser = await pw_instance.chromium.connect_over_cdp(
@@ -969,32 +1000,50 @@ async def verify_gemini_auto(
                 timeout=5000,
             )
             cdp_mode = True
-            # Always create a fresh incognito context to avoid stale sessions
-            ctx_browser = await browser.new_context()
+            ctx_browser = await browser.new_context(
+                user_agent=_STEALTH_UA,
+                viewport={"width": 1280, "height": 800},
+            )
             log.info("Using CDP connection to real Chrome browser (fresh context)")
         except Exception:
-            # Fall back to launching headless Chromium
             cdp_mode = False
             log.info("CDP not available, launching headless Chromium")
             browser = await pw_instance.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--window-size=1280,800",
+                ],
             )
             ctx_browser = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
+                user_agent=_STEALTH_UA,
                 viewport={"width": 1280, "height": 800},
+                locale="en-US",
             )
 
         page = await ctx_browser.new_page()
 
+        # Inject stealth scripts to hide automation fingerprints
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+            const origQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (params) =>
+                params.name === 'notifications'
+                    ? Promise.resolve({state: Notification.permission})
+                    : origQuery(params);
+        """)
+
         # ── Step 1: الإيميل — enter email in Google ──
         await on_progress(_build_progress(0, detail=f"تسجيل الدخول بـ {gmail}..."))
-        await page.goto("https://accounts.google.com/signin", wait_until="networkidle", timeout=30000)
-        await asyncio.sleep(2)
+        await page.goto("https://accounts.google.com/", wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(random.uniform(2, 4))
 
         # Check if email input is visible; Google may show a different page
         email_input = page.locator('input[type="email"]')
@@ -1006,12 +1055,36 @@ async def verify_gemini_auto(
             result = {"success": False, "error": f"صفحة Google غير متوقعة: {title}"}
             return result
 
-        await email_input.fill(gmail)
+        await email_input.click()
+        await asyncio.sleep(random.uniform(0.3, 0.8))
+        await email_input.type(gmail, delay=random.randint(40, 120))
+        await asyncio.sleep(random.uniform(0.5, 1.5))
         next_btn = page.locator("#identifierNext")
         if await next_btn.count() == 0:
             next_btn = page.get_by_role("button", name="Next")
         await next_btn.click()
-        await asyncio.sleep(4)
+        await asyncio.sleep(random.uniform(4, 6))
+
+        # Check for "Couldn't sign you in" page (Google bot detection)
+        cur_title = await page.title()
+        if "couldn" in cur_title.lower() and "sign" in cur_title.lower():
+            log.warning("Google 'Couldn't sign you in' detected after email. Retrying...")
+            await asyncio.sleep(random.uniform(2, 4))
+            await page.goto("https://accounts.google.com/", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(random.uniform(3, 5))
+            email_input2 = page.locator('input[type="email"]')
+            if await email_input2.count() > 0:
+                await email_input2.click()
+                await asyncio.sleep(random.uniform(0.3, 0.8))
+                await email_input2.type(gmail, delay=random.randint(60, 150))
+                await asyncio.sleep(random.uniform(1, 2))
+                next_btn2 = page.locator("#identifierNext")
+                if await next_btn2.count() == 0:
+                    next_btn2 = page.get_by_role("button", name="Next")
+                await next_btn2.click()
+                await asyncio.sleep(random.uniform(4, 6))
+            else:
+                log.warning("Retry failed: no email input on second attempt")
 
         # Check for email error
         email_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .Ekjuhf")
@@ -1038,37 +1111,71 @@ async def verify_gemini_auto(
                 cur_url, title, page_text[:500],
             )
 
-            # Check specific Google pages
-            if "find your Google Account" in page_text or "العثور على" in page_text:
-                await on_progress(_build_progress(0, error="الإيميل غير موجود في Google"))
-                result = {"success": False, "error": "الإيميل غير موجود في Google"}
-                return result
-            if "captcha" in page_text.lower() or "robot" in page_text.lower():
-                await on_progress(_build_progress(1, error="Google يطلب CAPTCHA — جرّب لاحقاً"))
-                result = {"success": False, "error": "Google يطلب CAPTCHA — جرّب بعد فترة"}
-                return result
-            if "verify" in cur_url.lower() or "challenge" in cur_url.lower():
-                await on_progress(_build_progress(1, error="Google يطلب تحقق أمني إضافي"))
-                result = {"success": False, "error": f"Google يطلب تحقق أمني إضافي ({title})"}
-                return result
-
-            # Try alternative password selectors
-            alt_pwd = page.locator('input[name="Passwd"], input[name="password"], input[aria-label="Password"]')
-            if await alt_pwd.count() > 0:
-                pwd_input = alt_pwd.first
-                log.info("Found password input via alternative selector")
+            # Handle "Couldn't sign you in" with a fresh retry
+            if "couldn" in title.lower() and "sign" in title.lower():
+                log.info("Retrying sign-in from scratch after 'Couldn't sign you in'")
+                await asyncio.sleep(random.uniform(3, 6))
+                await page.goto("https://accounts.google.com/", wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(random.uniform(3, 5))
+                retry_email = page.locator('input[type="email"]')
+                if await retry_email.count() > 0:
+                    await retry_email.click()
+                    await asyncio.sleep(random.uniform(0.5, 1))
+                    await retry_email.type(gmail, delay=random.randint(70, 150))
+                    await asyncio.sleep(random.uniform(1, 2))
+                    retry_next = page.locator("#identifierNext")
+                    if await retry_next.count() == 0:
+                        retry_next = page.get_by_role("button", name="Next")
+                    await retry_next.click()
+                    await asyncio.sleep(random.uniform(5, 7))
+                    try:
+                        pwd_input = page.locator('input[type="password"]:visible')
+                        await pwd_input.wait_for(state="visible", timeout=15000)
+                    except Exception:
+                        retry_title = await page.title()
+                        detail = f"الصفحة: {retry_title} | الرابط: {page.url[:80]}"
+                        await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور بعد إعادة المحاولة", detail=detail))
+                        result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {retry_title}"}
+                        return result
+                else:
+                    await on_progress(_build_progress(0, error="فشل إعادة المحاولة"))
+                    result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
+                    return result
             else:
-                detail = f"الصفحة: {title} | الرابط: {cur_url[:80]}"
-                await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور", detail=detail))
-                result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
-                return result
+                # Check specific Google pages
+                if "find your Google Account" in page_text or "العثور على" in page_text:
+                    await on_progress(_build_progress(0, error="الإيميل غير موجود في Google"))
+                    result = {"success": False, "error": "الإيميل غير موجود في Google"}
+                    return result
+                if "captcha" in page_text.lower() or "robot" in page_text.lower():
+                    await on_progress(_build_progress(1, error="Google يطلب CAPTCHA — جرّب لاحقاً"))
+                    result = {"success": False, "error": "Google يطلب CAPTCHA — جرّب بعد فترة"}
+                    return result
+                if "verify" in cur_url.lower() or "challenge" in cur_url.lower():
+                    await on_progress(_build_progress(1, error="Google يطلب تحقق أمني إضافي"))
+                    result = {"success": False, "error": f"Google يطلب تحقق أمني إضافي ({title})"}
+                    return result
 
-        await pwd_input.fill(gmail_password)
+                # Try alternative password selectors
+                alt_pwd = page.locator('input[name="Passwd"], input[name="password"], input[aria-label="Password"]')
+                if await alt_pwd.count() > 0:
+                    pwd_input = alt_pwd.first
+                    log.info("Found password input via alternative selector")
+                else:
+                    detail = f"الصفحة: {title} | الرابط: {cur_url[:80]}"
+                    await on_progress(_build_progress(1, error="فشل الوصول لصفحة كلمة المرور", detail=detail))
+                    result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
+                    return result
+
+        await pwd_input.click()
+        await asyncio.sleep(random.uniform(0.3, 0.8))
+        await pwd_input.type(gmail_password, delay=random.randint(30, 90))
+        await asyncio.sleep(random.uniform(0.5, 1.5))
         pwd_next = page.locator("#passwordNext")
         if await pwd_next.count() == 0:
             pwd_next = page.get_by_role("button", name="Next")
         await pwd_next.click()
-        await asyncio.sleep(4)
+        await asyncio.sleep(random.uniform(4, 6))
 
         # Check for wrong password error
         pwd_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab")
@@ -1468,7 +1575,7 @@ async def verify_gemini_auto(
         if redirect_url and page:
             try:
                 log.info("Navigating to redirect URL: %s", redirect_url)
-                await page.goto(redirect_url, wait_until="networkidle", timeout=30000)
+                await page.goto(redirect_url, wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(3)
 
                 # Log what Google shows at the redirect URL
