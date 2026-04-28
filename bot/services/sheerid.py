@@ -1417,18 +1417,32 @@ async def verify_gemini_auto(
 
         # ── Step 9: اكتمال ──
         await asyncio.sleep(0.5)
-        await on_progress(_build_progress(9))
 
-        result = {
-            "success": True,
-            "student": f"{first} {last}",
-            "email": student_email,
-            "gmail": gmail,
-            "school": uni["name"],
-            "step": final_step,
-            "redirect": redirect_url,
-            "verificationId": vid,
-        }
+        # Only report success if SheerID actually approved AND we had a redirect URL
+        if final_step == "success" and redirect_url:
+            await on_progress(_build_progress(9))
+            result = {
+                "success": True,
+                "student": f"{first} {last}",
+                "email": student_email,
+                "gmail": gmail,
+                "school": uni["name"],
+                "step": final_step,
+                "redirect": redirect_url,
+                "verificationId": vid,
+            }
+        else:
+            await on_progress(_build_progress(8, error=f"لم يكتمل التحقق — حالة SheerID: {final_step}"))
+            result = {
+                "success": False,
+                "error": f"SheerID لم يوافق على التحقق (الحالة: {final_step})",
+                "student": f"{first} {last}",
+                "email": student_email,
+                "gmail": gmail,
+                "school": uni["name"],
+                "step": final_step,
+                "verificationId": vid,
+            }
         return result
 
     except Exception as exc:
