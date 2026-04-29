@@ -54,9 +54,39 @@
 ```bash
 pip install -r requirements.txt
 playwright install chromium
+# تثبيت Camoufox (متصفح مضاد للكشف — مجاني):
+python -m camoufox fetch
 cp .env.example .env
 # عدّل .env بالقيم الصحيحة
 python -m bot.main
+```
+
+## مكافحة الكشف (Anti-Detection)
+
+البوت يدعم عدة متصفحات مرتبة حسب الأفضلية:
+
+| المتصفح | مجاني؟ | مستوى الإخفاء | التثبيت |
+|---------|--------|---------------|---------|
+| **Camoufox** | ✅ مجاني | ⭐⭐⭐⭐⭐ | `pip install camoufox[geoip] && python -m camoufox fetch` |
+| **Patchright** | ✅ مجاني | ⭐⭐⭐⭐ | `pip install patchright && patchright install chromium` |
+| **Browserless + Residential Proxy** | 💰 مدفوع | ⭐⭐⭐⭐⭐ | `BROWSER_PROVIDER=browserless` |
+| **Playwright + Stealth** | ✅ مجاني | ⭐⭐ | (افتراضي) |
+
+### متغيرات البيئة للمتصفحات
+
+```env
+# Browserless (مدفوع):
+BROWSER_PROVIDER=browserless
+BROWSERLESS_TOKEN=your_token
+BROWSERLESS_PROXY=residential          # بروكسي سكني مدمج (افتراضي)
+BROWSERLESS_PROXY_COUNTRY=us           # دولة البروكسي
+
+# BrowserBase (مدفوع):
+BROWSER_PROVIDER=browserbase
+BROWSERBASE_API_KEY=your_key
+
+# بدون مزود سحابي (يستخدم Camoufox/Patchright/Playwright محلياً):
+BROWSER_PROVIDER=
 ```
 
 ## Docker
