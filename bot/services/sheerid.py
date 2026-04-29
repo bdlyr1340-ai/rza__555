@@ -1388,7 +1388,8 @@ async def verify_gemini_auto(
             log.warning("Warmup failed (non-fatal): %s", e)
 
     # ── Max proxy retries — cycle through different proxies on timeout ──
-    _MAX_PROXY_RETRIES = 4
+    # Dynamic: if no proxies, retry only twice (Camoufox direct + standard direct).
+    # If proxies exist, try up to len(proxies)+1 attempts (capped at 5).
     _GOTO_TIMEOUT = 50_000  # 50s per attempt
 
     def _build_proxy_cfg(purl: Optional[str]) -> Optional[Dict[str, str]]:
@@ -1404,10 +1405,12 @@ async def verify_gemini_auto(
         return cfg
 
     # Collect unique proxies to try (shuffle for randomness)
-    _all_proxies: List[str] = list(_load_proxy_list())
+    _all_proxies: List[Optional[str]] = list(_load_proxy_list())
     random.shuffle(_all_proxies)
     if not _all_proxies:
-        _all_proxies = [None]  # type: ignore[list-item]  # no proxy available
+        _all_proxies = [None]  # no proxy available — single direct attempt
+    # Compute retry count: enough to try every proxy + 1 fallback, max 5
+    _MAX_PROXY_RETRIES = min(5, max(2, len([p for p in _all_proxies if p]) + 1))
 
     _cloud_cleanup = None  # async callable set when using cloud browser
 
@@ -1502,9 +1505,10 @@ async def verify_gemini_auto(
 
             try:
                 # ── Strategy 1: Camoufox (best anti-detection, free) ──
-                if _camoufox_available and not proxy_cfg:
+                if _camoufox_available:
                     try:
-                        log.info("Launching Camoufox (headless anti-detect browser)")
+                        log.info("Launching Camoufox (headless anti-detect browser) — proxy=%s",
+                                 proxy_cfg.get("server") if proxy_cfg else "direct")
                         await on_progress(_build_progress(0, detail="تشغيل Camoufox (متصفح مضاد للكشف)..."))
 
                         camoufox_kwargs: Dict[str, Any] = {
@@ -1512,21 +1516,39 @@ async def verify_gemini_auto(
                             "humanize": True,
                             "os": ["windows", "macos"],
                         }
-                        # Camoufox handles its own anti-detection — no need for stealth plugins
+                        # Camoufox supports proxy config in newer versions
+                        if proxy_cfg:
+                            camoufox_kwargs["proxy"] = proxy_cfg
                         _camoufox_ctx = AsyncCamoufox(**camoufox_kwargs)
                         ctx_browser = await _camoufox_ctx.__aenter__()
                         page = await ctx_browser.new_page()
                         cdp_mode = False
-                        # Store cleanup reference
                         _cloud_cleanup = _camoufox_ctx.__aexit__
 
-                        # Quick connectivity check
+                        # Lenient connectivity check — accept any successful navigation
+                        # ERR_ABORTED on 204 responses is normal and means connectivity works.
+                        _conn_ok = False
                         try:
-                            resp = await page.goto("https://www.google.com/generate_204", wait_until="commit", timeout=20_000)
-                            if resp and resp.status != 204:
-                                log.warning("Camoufox connectivity check returned status %d", resp.status)
+                            resp = await page.goto(
+                                "https://www.google.com/generate_204",
+                                wait_until="domcontentloaded",
+                                timeout=25_000,
+                            )
+                            if resp is not None:
+                                _conn_ok = True
+                                log.info("Camoufox connectivity OK (status=%s)", resp.status)
+                            else:
+                                _conn_ok = True
+                                log.info("Camoufox connectivity check completed without response — assuming OK")
                         except Exception as conn_exc:
-                            log.warning("Camoufox connectivity check failed: %s", conn_exc)
+                            _err_str = str(conn_exc).lower()
+                            if any(x in _err_str for x in ("aborted", "ns_binding_aborted", "net::err_aborted")):
+                                _conn_ok = True
+                                log.info("Camoufox got abort on 204 (expected) — connectivity OK")
+                            else:
+                                log.warning("Camoufox connectivity check failed: %s", conn_exc)
+
+                        if not _conn_ok:
                             try:
                                 await _camoufox_ctx.__aexit__(None, None, None)
                             except Exception:
@@ -1535,16 +1557,24 @@ async def verify_gemini_auto(
                             browser = None
                             page = None
                             ctx_browser = None
-                            _camoufox_available = False
-                            log.info("Camoufox failed — falling back to standard browser")
+                            log.info("Camoufox connectivity failed — trying next attempt")
                             continue
 
                         log.info("Camoufox launched successfully")
                         break  # success — proceed to sign-in
                     except Exception as cmfx_exc:
-                        log.warning("Camoufox launch failed: %s — falling back", cmfx_exc)
-                        _camoufox_available = False
+                        log.warning("Camoufox launch failed: %s", cmfx_exc)
+                        # Only disable Camoufox permanently on import/binary errors
+                        _err_str = str(cmfx_exc).lower()
+                        if any(x in _err_str for x in ("import", "module", "executable", "binary", "not found", "no such file")):
+                            _camoufox_available = False
+                            log.info("Camoufox permanently disabled — falling back to other browsers")
+                        try:
+                            await _camoufox_ctx.__aexit__(None, None, None)
+                        except Exception:
+                            pass
                         continue
+
 
                 # ── Strategy 2: Patchright (patched Playwright, free) ──
                 if _patchright_available and not _camoufox_available:
@@ -1656,8 +1686,20 @@ async def verify_gemini_auto(
             break
         else:
             # All proxy attempts exhausted at launch/connectivity stage
-            await on_progress(_build_progress(0, error="فشل الاتصال بـ Google — جميع البروكسيات لا تعمل"))
-            return {"success": False, "error": "فشل الاتصال بـ Google بعد تجربة جميع البروكسيات المتاحة"}
+            _proxy_count = len([p for p in _all_proxies if p])
+            if _proxy_count == 0:
+                _err_msg = (
+                    "فشل الاتصال بـ Google من السيرفر مباشرة.\n"
+                    "السبب: عنوان IP الخاص بالسيرفر محجوب من Google (شائع على Railway/Render).\n"
+                    "الحل: أضف بروكسي residential في متغير PROXY_LIST، أو استخدم BrowserBase/Browserless."
+                )
+            else:
+                _err_msg = (
+                    f"فشل الاتصال بـ Google بعد تجربة {_proxy_count} بروكسي.\n"
+                    "تأكد أن البروكسيات تعمل وغير محظورة من Google."
+                )
+            await on_progress(_build_progress(0, error=_err_msg))
+            return {"success": False, "error": _err_msg}
 
     try:
         # ── Try saved cookies first (skip login entirely) ──
