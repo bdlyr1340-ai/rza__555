@@ -80,11 +80,33 @@ async def _connect_cloud_browser(pw_instance):
 
     elif provider == "browserless":
         token = os.environ.get("BROWSERLESS_TOKEN", "")
-        base_url = os.environ.get("BROWSERLESS_URL", "wss://chrome.browserless.io")
+        base_url = os.environ.get("BROWSERLESS_URL", "wss://production-sfo.browserless.io")
         if not token:
             raise ValueError("BROWSERLESS_TOKEN not set")
 
+        # Build WebSocket URL with proxy parameters
         ws_url = f"{base_url}?token={token}"
+
+        # Residential proxy: add &proxy=residential&proxyCountry=XX&proxySticky
+        # Set BROWSERLESS_PROXY=residential to enable (default), or =none to disable
+        proxy_mode = os.environ.get("BROWSERLESS_PROXY", "residential").lower().strip()
+        proxy_country = os.environ.get("BROWSERLESS_PROXY_COUNTRY", "us").lower().strip()
+
+        if proxy_mode == "residential":
+            ws_url += f"&proxy=residential&proxyCountry={proxy_country}&proxySticky"
+            log.info("Browserless: residential proxy enabled (country=%s, sticky=true)", proxy_country)
+        elif proxy_mode != "none":
+            log.info("Browserless: proxy mode '%s' (no built-in proxy)", proxy_mode)
+
+        # Third-party proxy support via launch args
+        third_party_proxy = os.environ.get("BROWSERLESS_THIRD_PARTY_PROXY", "").strip()
+        if third_party_proxy:
+            # Format: http://user:pass@ip:port
+            launch_args = {"args": [f"--proxy-server={third_party_proxy}"]}
+            import json as _json
+            ws_url += f"&launch={_json.dumps(launch_args)}"
+            log.info("Browserless: third-party proxy configured: %s", third_party_proxy.split("@")[-1] if "@" in third_party_proxy else third_party_proxy[:30])
+
         log.info("Connecting to Browserless: %s", base_url)
         browser = await pw_instance.chromium.connect_over_cdp(ws_url, timeout=30_000)
         context = browser.contexts[0] if browser.contexts else await browser.new_context(
@@ -1268,20 +1290,98 @@ async def verify_gemini_auto(
     cdp_mode = False
     result: Dict[str, Any] = {"success": False, "error": "خطأ غير متوقع"}
 
-    _STEALTH_UA = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.6778.86 Safari/537.36"
-    )
+    _STEALTH_UAS = [
+        (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/136.0.7103.93 Safari/537.36"
+        ),
+        (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/136.0.7103.93 Safari/537.36"
+        ),
+        (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/135.0.7049.115 Safari/537.36"
+        ),
+    ]
+    _STEALTH_UA = random.choice(_STEALTH_UAS)
+    _is_mac_ua = "Macintosh" in _STEALTH_UA
     stealth = Stealth(
         navigator_user_agent_override=_STEALTH_UA,
         navigator_vendor_override="Google Inc.",
-        navigator_platform_override="Win32",
+        navigator_platform_override="MacIntel" if _is_mac_ua else "Win32",
+        navigator_languages_override=["en-US", "en"],
     )
 
+    # Extra anti-detection JS to inject into every page
+    _EXTRA_STEALTH_JS = """
+    // Hide webdriver flag
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    // Realistic plugins array
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+    });
+    // Chrome object
+    window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+    // Permissions
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) =>
+        parameters.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : originalQuery(parameters);
+    """
+
+    async def _human_delay(min_s=0.5, max_s=2.0):
+        await asyncio.sleep(random.uniform(min_s, max_s))
+
+    async def _human_mouse_move(p):
+        """Simulate random mouse movements to appear human."""
+        try:
+            for _ in range(random.randint(2, 5)):
+                x = random.randint(100, 900)
+                y = random.randint(100, 600)
+                await p.mouse.move(x, y, steps=random.randint(5, 15))
+                await asyncio.sleep(random.uniform(0.05, 0.2))
+        except Exception:
+            pass
+
+    async def _warmup_google(p):
+        """Visit Google homepage to build cookies before sign-in."""
+        try:
+            log.info("Warming up: visiting google.com first")
+            await p.goto("https://www.google.com/", wait_until="domcontentloaded", timeout=20_000)
+            await _human_delay(1.5, 3.0)
+            await _human_mouse_move(p)
+            # Accept cookies consent if shown
+            consent_btn = p.locator(
+                "button:has-text('Accept all'), "
+                "button:has-text('Accept'), "
+                "button:has-text('I agree'), "
+                "button:has-text('Reject all')"
+            )
+            if await consent_btn.count() > 0:
+                await consent_btn.first.click()
+                await _human_delay(1.0, 2.0)
+            # Type a search query to look natural
+            search_box = p.locator('textarea[name="q"], input[name="q"]')
+            if await search_box.count() > 0:
+                queries = ["weather today", "latest news", "best restaurants near me", "time now"]
+                await search_box.first.click()
+                await _human_delay(0.3, 0.8)
+                await search_box.first.type(random.choice(queries), delay=random.randint(50, 120))
+                await _human_delay(0.5, 1.5)
+                await p.keyboard.press("Escape")
+                await _human_delay(0.5, 1.0)
+            log.info("Warmup complete")
+        except Exception as e:
+            log.warning("Warmup failed (non-fatal): %s", e)
+
     # ── Max proxy retries — cycle through different proxies on timeout ──
-    _MAX_PROXY_RETRIES = 3
-    _GOTO_TIMEOUT = 45_000  # 45s per attempt (fail fast, retry with new proxy)
+    _MAX_PROXY_RETRIES = 4
+    _GOTO_TIMEOUT = 50_000  # 50s per attempt
 
     def _build_proxy_cfg(purl: Optional[str]) -> Optional[Dict[str, str]]:
         if not purl:
@@ -1332,6 +1432,7 @@ async def verify_gemini_auto(
             browser, ctx_browser, _cloud_cleanup = await _connect_cloud_browser(pw_instance)
             cdp_mode = True
             await stealth.apply_stealth_async(ctx_browser)
+            await ctx_browser.add_init_script(_EXTRA_STEALTH_JS)
             page = await ctx_browser.new_page()
             # Cloud browser connected via CDP — skip strict connectivity check
             # (generate_204 may return ERR_ABORTED on some cloud providers)
@@ -1354,6 +1455,22 @@ async def verify_gemini_auto(
             cdp_mode = False
 
     # ── Fallback: local browser with proxy rotation ──
+    # Try Camoufox first (best free anti-detection), then Patchright, then Playwright
+    _camoufox_available = False
+    _patchright_available = False
+    try:
+        from camoufox.async_api import AsyncCamoufox
+        _camoufox_available = True
+        log.info("Camoufox is available — will use as primary local browser")
+    except ImportError:
+        log.info("Camoufox not installed — checking Patchright")
+        try:
+            from patchright.async_api import async_playwright as patchright_playwright
+            _patchright_available = True
+            log.info("Patchright is available — will use as secondary local browser")
+        except ImportError:
+            log.info("Neither Camoufox nor Patchright installed — using standard Playwright")
+
     if not _cloud_connected:
         for proxy_attempt_idx in range(_MAX_PROXY_RETRIES):
             proxy_url = _all_proxies[proxy_attempt_idx % len(_all_proxies)] if _all_proxies[0] is not None else None
@@ -1376,52 +1493,141 @@ async def verify_gemini_auto(
             cdp_mode = False
 
             try:
-                pw_instance = await async_playwright().start()
-
-                cdp_mode = False
-                # Skip CDP when proxy is configured — CDP ignores per-context proxy settings
-                if not proxy_cfg:
+                # ── Strategy 1: Camoufox (best anti-detection, free) ──
+                if _camoufox_available and not proxy_cfg:
                     try:
-                        browser = await pw_instance.chromium.connect_over_cdp(
-                            os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
-                            timeout=5000,
-                        )
-                        cdp_mode = True
+                        log.info("Launching Camoufox (headless anti-detect browser)")
+                        await on_progress(_build_progress(0, detail="تشغيل Camoufox (متصفح مضاد للكشف)..."))
+
+                        camoufox_kwargs: Dict[str, Any] = {
+                            "headless": True,
+                            "humanize": True,
+                            "os": ["windows", "macos"],
+                        }
+                        # Camoufox handles its own anti-detection — no need for stealth plugins
+                        _camoufox_ctx = AsyncCamoufox(**camoufox_kwargs)
+                        ctx_browser = await _camoufox_ctx.__aenter__()
+                        page = await ctx_browser.new_page()
+                        cdp_mode = False
+                        # Store cleanup reference
+                        _cloud_cleanup = _camoufox_ctx.__aexit__
+
+                        # Quick connectivity check
+                        try:
+                            resp = await page.goto("https://www.google.com/generate_204", wait_until="commit", timeout=20_000)
+                            if resp and resp.status != 204:
+                                log.warning("Camoufox connectivity check returned status %d", resp.status)
+                        except Exception as conn_exc:
+                            log.warning("Camoufox connectivity check failed: %s", conn_exc)
+                            try:
+                                await _camoufox_ctx.__aexit__(None, None, None)
+                            except Exception:
+                                pass
+                            _cloud_cleanup = None
+                            browser = None
+                            page = None
+                            ctx_browser = None
+                            _camoufox_available = False
+                            log.info("Camoufox failed — falling back to standard browser")
+                            continue
+
+                        log.info("Camoufox launched successfully")
+                        break  # success — proceed to sign-in
+                    except Exception as cmfx_exc:
+                        log.warning("Camoufox launch failed: %s — falling back", cmfx_exc)
+                        _camoufox_available = False
+                        continue
+
+                # ── Strategy 2: Patchright (patched Playwright, free) ──
+                if _patchright_available and not _camoufox_available:
+                    try:
+                        log.info("Launching Patchright (patched Playwright)")
+                        await on_progress(_build_progress(0, detail="تشغيل Patchright (متصفح مُعدَّل)..."))
+                        pw_instance = await patchright_playwright().start()
+
+                        launch_args = [
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--window-size=1280,800",
+                        ]
+                        launch_kwargs_pr: Dict[str, Any] = {
+                            "headless": True,
+                            "args": launch_args,
+                        }
+                        if proxy_cfg:
+                            launch_kwargs_pr["proxy"] = proxy_cfg
+                        browser = await pw_instance.chromium.launch(**launch_kwargs_pr)
                         ctx_browser = await browser.new_context(
                             user_agent=_STEALTH_UA,
                             viewport={"width": 1280, "height": 800},
                             locale="en-US",
+                            timezone_id="America/New_York" if not _is_mac_ua else "America/Los_Angeles",
+                            color_scheme="light",
                         )
-                        log.info("Using CDP connection to real Chrome browser (no proxy)")
-                    except Exception:
-                        log.info("CDP not available, will launch headless Chromium")
+                        page = await ctx_browser.new_page()
+                        cdp_mode = False
+                        log.info("Patchright launched successfully")
+                    except Exception as pr_exc:
+                        log.warning("Patchright launch failed: %s — falling back to Playwright", pr_exc)
+                        _patchright_available = False
+                        await _cleanup_browser(browser, ctx_browser, pw_instance, cdp_mode)
+                        continue
 
-                if not cdp_mode:
-                    log.info("Launching headless Chromium with proxy: %s", proxy_cfg.get("server") if proxy_cfg else "none")
-                    launch_args = [
-                        "--no-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-infobars",
-                        "--disable-dev-shm-usage",
-                        "--disable-extensions",
-                        "--window-size=1280,800",
-                    ]
-                    launch_kwargs: Dict[str, Any] = {
-                        "headless": True,
-                        "args": launch_args,
-                    }
-                    if proxy_cfg:
-                        launch_kwargs["proxy"] = proxy_cfg
-                    browser = await pw_instance.chromium.launch(**launch_kwargs)
-                    ctx_browser = await browser.new_context(
-                        user_agent=_STEALTH_UA,
-                        viewport={"width": 1280, "height": 800},
-                        locale="en-US",
-                    )
+                # ── Strategy 3: Standard Playwright (original fallback) ──
+                if not _camoufox_available and not _patchright_available:
+                    pw_instance = await async_playwright().start()
 
-                # Apply stealth to the context so ALL pages get stealth automatically
-                await stealth.apply_stealth_async(ctx_browser)
-                page = await ctx_browser.new_page()
+                    cdp_mode = False
+                    # Skip CDP when proxy is configured — CDP ignores per-context proxy settings
+                    if not proxy_cfg:
+                        try:
+                            browser = await pw_instance.chromium.connect_over_cdp(
+                                os.environ.get("CHROME_CDP_URL", "http://localhost:29229"),
+                                timeout=5000,
+                            )
+                            cdp_mode = True
+                            ctx_browser = await browser.new_context(
+                                user_agent=_STEALTH_UA,
+                                viewport={"width": 1280, "height": 800},
+                                locale="en-US",
+                            )
+                            log.info("Using CDP connection to real Chrome browser (no proxy)")
+                        except Exception:
+                            log.info("CDP not available, will launch headless Chromium")
+
+                    if not cdp_mode:
+                        log.info("Launching headless Chromium with proxy: %s", proxy_cfg.get("server") if proxy_cfg else "none")
+                        launch_args = [
+                            "--no-sandbox",
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-infobars",
+                            "--disable-dev-shm-usage",
+                            "--disable-extensions",
+                            "--window-size=1280,800",
+                            "--disable-features=IsolateOrigins,site-per-process",
+                            "--flag-switches-begin", "--flag-switches-end",
+                        ]
+                        launch_kwargs: Dict[str, Any] = {
+                            "headless": True,
+                            "args": launch_args,
+                        }
+                        if proxy_cfg:
+                            launch_kwargs["proxy"] = proxy_cfg
+                        browser = await pw_instance.chromium.launch(**launch_kwargs)
+                        ctx_browser = await browser.new_context(
+                            user_agent=_STEALTH_UA,
+                            viewport={"width": 1280, "height": 800},
+                            locale="en-US",
+                            timezone_id="America/New_York" if not _is_mac_ua else "America/Los_Angeles",
+                            color_scheme="light",
+                            java_script_enabled=True,
+                        )
+
+                    # Apply stealth to the context so ALL pages get stealth automatically
+                    await stealth.apply_stealth_async(ctx_browser)
+                    # Inject extra anti-detection JS on every new page
+                    await ctx_browser.add_init_script(_EXTRA_STEALTH_JS)
+                    page = await ctx_browser.new_page()
 
                 # ── Quick connectivity pre-check: lightweight fetch ──
                 try:
@@ -1479,14 +1685,18 @@ async def verify_gemini_auto(
             if await email_el.count() == 0:
                 return False
             await email_el.click()
-            await asyncio.sleep(random.uniform(0.3, 0.8))
-            await email_el.type(email_text, delay=random.randint(50, 130))
-            await asyncio.sleep(random.uniform(0.8, 1.5))
+            await _human_delay(0.5, 1.2)
+            # Simulate realistic typing with occasional pauses
+            for i, char in enumerate(email_text):
+                await p.keyboard.type(char, delay=random.randint(40, 120))
+                if char == "@" or (i > 0 and i % random.randint(5, 10) == 0):
+                    await _human_delay(0.2, 0.6)
+            await _human_delay(1.0, 2.5)
             nxt = p.locator("#identifierNext")
             if await nxt.count() == 0:
                 nxt = p.get_by_role("button", name="Next")
             await nxt.click()
-            await asyncio.sleep(random.uniform(4, 6))
+            await _human_delay(4, 7)
             return True
 
         # Google sign-in URLs to try (in order of preference)
@@ -1496,6 +1706,10 @@ async def verify_gemini_auto(
             "https://accounts.google.com/",
         ]
 
+        # Strategy: on first attempt, try navigating via Google homepage "Sign in" button
+        # to look more natural. On subsequent attempts, use direct URLs.
+        _USE_HOMEPAGE_SIGNIN = True
+
         if _cookies_worked:
             log.info("Skipping Google login steps 1-3 (cookies valid)")
         else:
@@ -1504,24 +1718,63 @@ async def verify_gemini_auto(
 
         signed_in = _cookies_worked
         last_goto_error = None
-        for attempt, signin_url in enumerate(_SIGNIN_URLS if not _cookies_worked else []):
-            log.info("Google sign-in attempt %d with URL: %s", attempt + 1, signin_url)
+
+        # Build attempt list: homepage first, then direct URLs
+        _attempt_list = []
+        if not _cookies_worked:
+            if _USE_HOMEPAGE_SIGNIN:
+                _attempt_list.append(("homepage", "https://www.google.com/"))
+            _attempt_list.extend([("direct", u) for u in _SIGNIN_URLS])
+
+        for attempt, (strategy, signin_url) in enumerate(_attempt_list):
+            log.info("Google sign-in attempt %d (strategy=%s) with URL: %s", attempt + 1, strategy, signin_url)
 
             if attempt > 0:
                 # Create fresh page for retries (clean cookies/state)
                 await page.close()
                 page = await ctx_browser.new_page()
                 await stealth.apply_stealth_async(page)
-                await asyncio.sleep(random.uniform(2, 4))
+                await _human_delay(2, 4)
 
             try:
-                await page.goto(signin_url, wait_until="domcontentloaded", timeout=_GOTO_TIMEOUT)
+                if strategy == "homepage":
+                    # Warmup: visit Google homepage and click "Sign in"
+                    await _warmup_google(page)
+                    await _human_delay(1.0, 2.0)
+
+                    # Click "Sign in" button on Google homepage
+                    signin_btn = page.locator(
+                        "a:has-text('Sign in'), "
+                        "a[href*='accounts.google.com']:has-text('Sign in'), "
+                        "a[data-pid='23']"
+                    )
+                    if await signin_btn.count() > 0:
+                        log.info("Clicking 'Sign in' button on Google homepage")
+                        await signin_btn.first.click()
+                        await _human_delay(3, 5)
+                    else:
+                        log.info("No 'Sign in' button found, navigating directly")
+                        await page.goto(_SIGNIN_URLS[0], wait_until="domcontentloaded", timeout=_GOTO_TIMEOUT)
+                        await _human_delay(2, 4)
+                else:
+                    # Warmup before direct sign-in attempt
+                    if attempt == 1:
+                        await _warmup_google(page)
+                        await page.close()
+                        page = await ctx_browser.new_page()
+                        await stealth.apply_stealth_async(page)
+                        await _human_delay(1, 2)
+
+                    await page.goto(signin_url, wait_until="domcontentloaded", timeout=_GOTO_TIMEOUT)
+                    await _human_delay(2, 4)
             except Exception as goto_exc:
                 last_goto_error = str(goto_exc)
                 log.warning("page.goto timeout/error on attempt %d: %s", attempt + 1, goto_exc)
                 await on_progress(_build_progress(0, detail=f"محاولة {attempt + 1} فشلت (timeout)، جاري إعادة المحاولة..."))
                 continue
-            await asyncio.sleep(random.uniform(2, 4))
+
+            # Simulate human mouse movement before typing
+            await _human_mouse_move(page)
 
             # Check if email input is visible
             if not await _enter_email_on_page(page, gmail):
@@ -1532,9 +1785,20 @@ async def verify_gemini_auto(
 
             # Check for "Couldn't sign you in" page
             cur_title = await page.title()
-            if "couldn" in cur_title.lower() and "sign" in cur_title.lower():
+            cur_body = ""
+            try:
+                cur_body = await page.inner_text("body")
+            except Exception:
+                pass
+            if ("couldn" in cur_title.lower() and "sign" in cur_title.lower()) or \
+               "couldn't sign you in" in cur_body.lower():
                 log.warning("Attempt %d: 'Couldn't sign you in' (URL: %s)", attempt + 1, signin_url)
                 await on_progress(_build_progress(0, detail=f"محاولة {attempt + 1}: فشلت، جاري إعادة المحاولة..."))
+                # Clear cookies and try fresh on next attempt
+                try:
+                    await ctx_browser.clear_cookies()
+                except Exception:
+                    pass
                 continue
 
             # Check for email error
@@ -1556,7 +1820,7 @@ async def verify_gemini_auto(
                 result = {"success": False, "error": f"فشل الاتصال بـ Google — Timeout على جميع الروابط. جرّب تغيير البروكسي أو المحاولة لاحقاً.\n{last_goto_error}"}
             else:
                 await on_progress(_build_progress(0, error="فشل تسجيل الدخول — Google يرفض الاتصال من هذا السيرفر"))
-                result = {"success": False, "error": "فشل تسجيل الدخول (Couldn't sign you in) — Google يرفض الاتصال من هذا السيرفر. جرّب بعد فترة أو من سيرفر آخر."}
+                result = {"success": False, "error": "فشل تسجيل الدخول (Couldn't sign you in) — Google يرفض الاتصال. جرّب استخدام بروكسي سكني (Residential Proxy) أو خدمة متصفح سحابي (BrowserBase/Browserless)."}
             return result
 
         if not _cookies_worked:
@@ -1629,15 +1893,16 @@ async def verify_gemini_auto(
                         result = {"success": False, "error": f"فشل الوصول لصفحة كلمة المرور — {title}"}
                         return result
     
+            await _human_mouse_move(page)
             await pwd_input.click()
-            await asyncio.sleep(random.uniform(0.3, 0.8))
-            await pwd_input.type(gmail_password, delay=random.randint(30, 90))
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await _human_delay(0.3, 0.8)
+            await pwd_input.type(gmail_password, delay=random.randint(40, 110))
+            await _human_delay(0.8, 2.0)
             pwd_next = page.locator("#passwordNext")
             if await pwd_next.count() == 0:
                 pwd_next = page.get_by_role("button", name="Next")
             await pwd_next.click()
-            await asyncio.sleep(random.uniform(4, 6))
+            await _human_delay(4, 7)
     
             # Check for wrong password error
             pwd_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab")
