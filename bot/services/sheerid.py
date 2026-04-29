@@ -135,7 +135,15 @@ MAX_DELAY_MS = 800
 # ---------------------------------------------------------------------------
 
 def _load_proxy_list() -> List[str]:
-    """Load proxies from PROXY_LIST (multi-line) or PROXY_URL (single)."""
+    """Load proxies from PROXY_LIST (multi-line) or PROXY_URL (single).
+
+    NO_PROXY=1 → force direct connection (no proxy at all).
+    """
+    # Force no-proxy mode (free / direct from server IP)
+    if os.environ.get("NO_PROXY", "").strip() in ("1", "true", "yes", "on"):
+        log.info("NO_PROXY=1 → skipping all proxies (direct connection)")
+        return []
+
     proxies: List[str] = []
 
     # PROXY_LIST: multi-line list of proxies (ip:port:user:pass format)
