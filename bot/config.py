@@ -36,7 +36,14 @@ BROWSER_PROVIDER: str = os.environ.get("BROWSER_PROVIDER", "")  # "browserbase" 
 BROWSERBASE_API_KEY: str = os.environ.get("BROWSERBASE_API_KEY", "")
 BROWSERBASE_PROJECT_ID: str = os.environ.get("BROWSERBASE_PROJECT_ID", "")
 BROWSERLESS_TOKEN: str = os.environ.get("BROWSERLESS_TOKEN", "")
-BROWSERLESS_URL: str = os.environ.get("BROWSERLESS_URL", "wss://chrome.browserless.io")
+BROWSERLESS_URL: str = os.environ.get("BROWSERLESS_URL", "wss://production-sfo.browserless.io")
+# Browserless proxy settings:
+# BROWSERLESS_PROXY: "residential" (default) | "none" — use built-in residential proxy
+# BROWSERLESS_PROXY_COUNTRY: ISO country code, default "us"
+# BROWSERLESS_THIRD_PARTY_PROXY: optional external proxy (http://user:pass@ip:port)
+BROWSERLESS_PROXY: str = os.environ.get("BROWSERLESS_PROXY", "residential")
+BROWSERLESS_PROXY_COUNTRY: str = os.environ.get("BROWSERLESS_PROXY_COUNTRY", "us")
+BROWSERLESS_THIRD_PARTY_PROXY: str = os.environ.get("BROWSERLESS_THIRD_PARTY_PROXY", "")
 
 # ── WebApp ──
 WEBAPP_URL: str = os.environ.get("WEBAPP_URL", "https://webapp-amfovjji.devinapps.com")
