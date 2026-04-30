@@ -1275,7 +1275,7 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
                 "Not now", "Skip", "Cancel", "ليس الآن", "تخطى", "تخطي", "إلغاء", "لاحقاً",
             ])
             if skipped:
-                await asyncio.sleep(2)
+                await asyncio.sleep(0.7)
                 return None  # bypassed → continue
 
         # ── Hard challenges ──
@@ -1302,7 +1302,7 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
             "نعم، هذا أنا", "نعم", "متابعة", "التالي", "تأكيد", "موافق",
         ])
         if clicked:
-            await asyncio.sleep(4)
+            await asyncio.sleep(1.4)
             try:
                 body2 = (await page.inner_text("body", timeout=5000) or "").lower()
             except Exception:
@@ -1342,7 +1342,7 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
                 "جرّب طريقة أخرى", "طريقة أخرى", "جرب طريقة اخرى",
             ])
             if switched:
-                await asyncio.sleep(4)
+                await asyncio.sleep(1.4)
                 # Look for the Authenticator option in the list
                 auth_clicked = await _try_click_buttons(page, [
                     "Get a verification code from the Google Authenticator app",
@@ -1356,7 +1356,7 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
                     "احصل على رمز",
                 ])
                 if auth_clicked:
-                    await asyncio.sleep(4)
+                    await asyncio.sleep(1.4)
                     log.info("Switched to authenticator path successfully")
                     # Return None so the normal 2FA/TOTP flow handles entering the code
                     return None
@@ -1372,13 +1372,13 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
             "جرّب طريقة أخرى", "طريقة أخرى",
         ])
         if last_resort:
-            await asyncio.sleep(4)
+            await asyncio.sleep(1.4)
             auth_clicked = await _try_click_buttons(page, [
                 "Get a verification code", "Google Authenticator",
                 "Authenticator app", "Authenticator",
             ])
             if auth_clicked:
-                await asyncio.sleep(4)
+                await asyncio.sleep(1.4)
                 log.info("Generic challenge bypassed via authenticator")
                 return None
 
@@ -1543,21 +1543,21 @@ async def _google_login_and_claim(
                 return False
 
             # Check for 2FA prompt
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.7)
             totp_input = page.locator('input[type="tel"]:visible')
             if await totp_input.count() > 0:
                 await totp_input.fill(totp_code)
                 totp_next = page.get_by_role("button", name="Next")
                 if await totp_next.count() > 0:
                     await totp_next.click()
-                await asyncio.sleep(3)
+                await asyncio.sleep(1.05)
 
             await on_progress(_build_progress(6))
 
             # Step 7-8: Check offer & Claim — navigate to redirect URL
             await on_progress(_build_progress(7))
             await page.goto(redirect_url, wait_until="domcontentloaded", timeout=90000)
-            await asyncio.sleep(3)
+            await asyncio.sleep(1.05)
 
             # Try to click any "Claim" / "Get offer" / "Continue" button
             for selector in [
@@ -1571,13 +1571,13 @@ async def _google_login_and_claim(
                 btn = page.locator(selector).first
                 if await btn.count() > 0:
                     await btn.click()
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(1.05)
                     break
 
             await on_progress(_build_progress(8))
 
             # Step 9: Process payment
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.7)
             # Check for any confirmation buttons
             for selector in [
                 "button:has-text('Subscribe')",
@@ -1588,11 +1588,11 @@ async def _google_login_and_claim(
                 btn = page.locator(selector).first
                 if await btn.count() > 0:
                     await btn.click()
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.7)
                     break
 
             await on_progress(_build_progress(9))
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.35)
             await on_progress(_build_progress(10))
 
             return True
@@ -1715,9 +1715,9 @@ async def verify_gemini_auto(
             : originalQuery(parameters);
     """
 
-    # Speed-up factor: lower = faster login. Set 0.4 (≈60% faster) by default.
-    # Override via env var SHEERID_SPEED_FACTOR (e.g. 0.3 for very fast, 1.0 for original).
-    _SPEED = float(os.getenv("SHEERID_SPEED_FACTOR", "0.4"))
+    # Speed-up factor: lower = faster login. Set 0.25 (≈4× faster) by default.
+    # Override via env var SHEERID_SPEED_FACTOR (e.g. 0.15 for very fast, 1.0 for original).
+    _SPEED = float(os.getenv("SHEERID_SPEED_FACTOR", "0.25"))
 
     async def _human_delay(min_s=0.5, max_s=2.0):
         await asyncio.sleep(random.uniform(min_s * _SPEED, max_s * _SPEED))
@@ -2090,7 +2090,7 @@ async def verify_gemini_auto(
                 try:
                     await ctx_browser.add_cookies(saved["cookies"])
                     await page.goto("https://myaccount.google.com/", wait_until="domcontentloaded", timeout=30_000)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.7)
                     cur_url = page.url
                     if "accounts.google.com/signin" in cur_url or "accounts.google.com/v3/signin" in cur_url:
                         log.info("Saved cookies expired for %s — falling back to login", gmail)
@@ -2370,7 +2370,7 @@ async def verify_gemini_auto(
             await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
     
             # ── Step 3: المصادقة الثنائية — handle 2FA ──
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.7)
     
             # Google 2FA comes in many forms; try to detect and handle each
             is_2fa_page = "challenge" in page.url.lower()
@@ -2406,7 +2406,7 @@ async def verify_gemini_auto(
                             totp_next = page.get_by_role("button", name="Next")
                         if await totp_next.count() > 0:
                             await totp_next.click()
-                        await asyncio.sleep(4)
+                        await asyncio.sleep(1.4)
 
                         # Check for 2FA error
                         totp_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
@@ -2457,7 +2457,7 @@ async def verify_gemini_auto(
                             await page.wait_for_load_state("domcontentloaded", timeout=10000)
                         except Exception:
                             pass
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(0.7)
     
                         # Log what options are available (with short timeout)
                         try:
@@ -2491,7 +2491,7 @@ async def verify_gemini_auto(
                                 await page.wait_for_load_state("domcontentloaded", timeout=10000)
                             except Exception:
                                 pass
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(0.7)
     
                             # Now look for TOTP input
                             totp_input2 = page.locator(
@@ -2508,7 +2508,7 @@ async def verify_gemini_auto(
                                     totp_next2 = page.get_by_role("button", name="Next")
                                 if await totp_next2.count() > 0:
                                     await totp_next2.click()
-                                await asyncio.sleep(4)
+                                await asyncio.sleep(1.4)
     
                                 # Check for 2FA error after submission
                                 totp_err = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
@@ -2569,7 +2569,7 @@ async def verify_gemini_auto(
                                 await page.wait_for_load_state("domcontentloaded", timeout=10000)
                             except Exception:
                                 pass
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(0.7)
     
                             # Now look for TOTP input
                             totp_input3 = page.locator(
@@ -2586,7 +2586,7 @@ async def verify_gemini_auto(
                                     totp_next3 = page.get_by_role("button", name="Next")
                                 if await totp_next3.count() > 0:
                                     await totp_next3.click()
-                                await asyncio.sleep(4)
+                                await asyncio.sleep(1.4)
     
                                 totp_err3 = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
                                 if await totp_err3.count() > 0:
@@ -2815,7 +2815,7 @@ async def verify_gemini_auto(
             try:
                 log.info("Navigating to redirect URL: %s", redirect_url)
                 await page.goto(redirect_url, wait_until="domcontentloaded", timeout=60_000)
-                await asyncio.sleep(3)
+                await asyncio.sleep(1.05)
 
                 # Log what Google shows at the redirect URL
                 claim_url = page.url
@@ -2843,7 +2843,7 @@ async def verify_gemini_auto(
                         btn_text = await btn.text_content()
                         log.info("Clicking claim button: '%s'", btn_text)
                         await btn.click()
-                        await asyncio.sleep(4)
+                        await asyncio.sleep(1.4)
                         claimed = True
                         break
 
@@ -2857,7 +2857,7 @@ async def verify_gemini_auto(
                 await on_progress(_build_progress(7, detail=f"تم المطالبة ({after_claim_title})، معالجة الدفع..."))
 
                 # ── Step 8: معالجة الدفع — auto-fill payment card if needed ──
-                await asyncio.sleep(2)
+                await asyncio.sleep(0.7)
 
                 # Check if Google asks for a payment method (card form)
                 card_input = page.locator(
@@ -2942,7 +2942,7 @@ async def verify_gemini_auto(
                         btn_text = await btn.text_content()
                         log.info("Clicking confirm button: '%s'", btn_text)
                         await btn.click()
-                        await asyncio.sleep(3)
+                        await asyncio.sleep(1.05)
                         break
 
                 final_url = page.url
