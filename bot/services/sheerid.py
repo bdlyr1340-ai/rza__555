@@ -1118,6 +1118,72 @@ async def _save_challenge_debug(page, gmail: str, reason: str) -> Dict[str, str]
     return debug
 
 
+async def _save_sheerid_debug(page, gmail: str, reason: str,
+                               api_response: Optional[Dict] = None) -> Dict[str, str]:
+    """Save screenshot + SheerID API response for fraud/reject debugging."""
+    debug = {"screenshot": "", "html": "", "summary": ""}
+    try:
+        ts = int(time.time())
+        safe = "".join(c if c.isalnum() else "_" for c in gmail)[:40]
+        png_path = f"{_DEBUG_DIR}/sheerid_{safe}_{ts}.png"
+        json_path = f"{_DEBUG_DIR}/sheerid_{safe}_{ts}.json"
+        txt_path = f"{_DEBUG_DIR}/sheerid_{safe}_{ts}.txt"
+
+        # Screenshot of whatever page the browser is currently on (if any)
+        if page is not None:
+            try:
+                await page.screenshot(path=png_path, full_page=True, timeout=10000)
+                debug["screenshot"] = png_path
+            except Exception as exc:
+                log.debug("SheerID screenshot failed: %s", exc)
+
+        # Save SheerID API response JSON
+        try:
+            if api_response is not None:
+                import json as _json
+                with open(json_path, "w", encoding="utf-8") as f:
+                    _json.dump(api_response, f, indent=2, ensure_ascii=False, default=str)
+                debug["html"] = json_path  # reuse html field for the JSON file
+        except Exception as exc:
+            log.debug("SheerID JSON save failed: %s", exc)
+
+        # Build summary
+        try:
+            url = ""
+            title = ""
+            if page is not None:
+                try:
+                    url = page.url or ""
+                    title = await page.title() or ""
+                except Exception:
+                    pass
+            error_ids = []
+            current_step = ""
+            if api_response:
+                error_ids = api_response.get("errorIds", [])
+                current_step = api_response.get("currentStep", "")
+            summary = (
+                f"REASON:        {reason}\n"
+                f"SHEERID STEP:  {current_step}\n"
+                f"ERROR IDS:     {error_ids}\n"
+                f"BROWSER URL:   {url}\n"
+                f"BROWSER TITLE: {title}\n"
+            )
+            if api_response:
+                summary += f"\n--- SHEERID RESPONSE ---\n{str(api_response)[:1500]}\n"
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(summary)
+            debug["summary"] = summary
+        except Exception as exc:
+            log.debug("SheerID summary save failed: %s", exc)
+
+        _LAST_CHALLENGE_DEBUG[gmail] = debug
+        log.warning("SheerID debug saved → %s", png_path or txt_path)
+    except Exception as exc:
+        log.warning("SheerID debug save crashed: %s", exc)
+    return debug
+
+
 async def _try_click_buttons(page, label_substrings: list, timeout: int = 3) -> bool:
     """Try clicking the first visible element matching any of the given label substrings.
 
@@ -2638,10 +2704,14 @@ async def verify_gemini_auto(
                 result = {"success": False, "error": err_msg}
                 return result
             if data.get("currentStep") == "error":
-                err_msg = f"خطأ SheerID: {data.get('errorIds', [])}"
+                err_ids = data.get("errorIds", [])
+                err_msg = f"خطأ SheerID: {err_ids}"
                 log.error("SheerID student info error: %s", data)
                 await on_progress(_build_progress(4, error=err_msg))
-                result = {"success": False, "error": err_msg}
+                dbg = await _save_sheerid_debug(page, gmail,
+                    f"SheerID student info rejected: {err_ids}", api_response=data)
+                result = {"success": False, "error": err_msg, "debug": dbg,
+                          "sheerid_errors": err_ids}
                 return result
 
             await on_progress(_build_progress(5, detail="تم إرسال البيانات، رفع المستندات..."))
@@ -2717,7 +2787,10 @@ async def verify_gemini_auto(
                         err_ids = poll_data.get("errorIds", [])
                         err_msg = f"SheerID رفض التحقق: {err_ids}"
                         await on_progress(_build_progress(6, error=err_msg))
-                        result = {"success": False, "error": err_msg}
+                        dbg = await _save_sheerid_debug(page, gmail,
+                            f"SheerID poll rejected: {err_ids}", api_response=poll_data)
+                        result = {"success": False, "error": err_msg, "debug": dbg,
+                                  "sheerid_errors": err_ids}
                         return result
                     else:
                         remaining = (max_polls - poll_i - 1) * poll_interval
@@ -2731,7 +2804,10 @@ async def verify_gemini_auto(
                 err_ids = data.get("errorIds", [])
                 err_msg = f"SheerID رفض التحقق: {err_ids}"
                 await on_progress(_build_progress(6, error=err_msg))
-                result = {"success": False, "error": err_msg}
+                dbg = await _save_sheerid_debug(page, gmail,
+                    f"SheerID completeDocUpload rejected: {err_ids}", api_response=data)
+                result = {"success": False, "error": err_msg, "debug": dbg,
+                          "sheerid_errors": err_ids}
                 return result
 
         # ── Step 7: المطالبة بالعرض — claim via redirect ──
