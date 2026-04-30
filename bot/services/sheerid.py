@@ -1239,12 +1239,64 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
             await _save_challenge_debug(page, gmail, "Phone verification required")
             return LoginError.GOOGLE_CHALLENGE
 
-        if "another device" in body or "tap yes" in body or "another phone" in body or "جهاز آخر" in body:
-            log.warning("Device-tap challenge — cannot auto-answer")
-            await _save_challenge_debug(page, gmail, "Device-tap (another phone) required")
+        # ── Device-tap prompt: try escaping via "Try another way" → Authenticator ──
+        is_device_tap = (
+            "/challenge/dp" in cur_url
+            or "another device" in body
+            or "tap yes" in body
+            or "another phone" in body
+            or "check your" in body  # "Check your Galaxy S21 Ultra 5G"
+            or "google sent a notification" in body
+            or "جهاز آخر" in body
+            or "تحقق من" in body
+        )
+        if is_device_tap:
+            log.info("Device-tap challenge detected — trying 'Try another way' → Authenticator")
+            switched = await _try_click_buttons(page, [
+                "Try another way", "Try another method",
+                "جرّب طريقة أخرى", "طريقة أخرى", "جرب طريقة اخرى",
+            ])
+            if switched:
+                await asyncio.sleep(4)
+                # Look for the Authenticator option in the list
+                auth_clicked = await _try_click_buttons(page, [
+                    "Get a verification code from the Google Authenticator app",
+                    "Get a verification code",
+                    "Google Authenticator",
+                    "Authenticator app",
+                    "Authenticator",
+                    "Enter a code",
+                    "تطبيق Google Authenticator",
+                    "تطبيق Authenticator",
+                    "احصل على رمز",
+                ])
+                if auth_clicked:
+                    await asyncio.sleep(4)
+                    log.info("Switched to authenticator path successfully")
+                    # Return None so the normal 2FA/TOTP flow handles entering the code
+                    return None
+                log.warning("Found 'Try another way' but no Authenticator option")
+            else:
+                log.warning("Could not find 'Try another way' button on device-tap page")
+            await _save_challenge_debug(page, gmail, "Device-tap (failed to switch to authenticator)")
             return LoginError.GOOGLE_CHALLENGE
 
-        # Generic challenge we couldn't handle
+        # Generic challenge we couldn't handle — try one last "Try another way" rescue
+        last_resort = await _try_click_buttons(page, [
+            "Try another way", "Try another method",
+            "جرّب طريقة أخرى", "طريقة أخرى",
+        ])
+        if last_resort:
+            await asyncio.sleep(4)
+            auth_clicked = await _try_click_buttons(page, [
+                "Get a verification code", "Google Authenticator",
+                "Authenticator app", "Authenticator",
+            ])
+            if auth_clicked:
+                await asyncio.sleep(4)
+                log.info("Generic challenge bypassed via authenticator")
+                return None
+
         await _save_challenge_debug(page, gmail, "Unknown challenge")
         return LoginError.GOOGLE_CHALLENGE
 
