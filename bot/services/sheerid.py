@@ -1055,12 +1055,98 @@ def _format_login_error(code: str, detail: str = "") -> str:
     return msg
 
 
+# Debug directory + last-challenge cache (read by callers to attach screenshots)
+_DEBUG_DIR = "/tmp/sheerid_debug"
+try:
+    os.makedirs(_DEBUG_DIR, exist_ok=True)
+except Exception:
+    pass
+
+# Maps gmail → {"screenshot": path, "html": path, "summary": str}
+_LAST_CHALLENGE_DEBUG: Dict[str, Dict[str, str]] = {}
+
+
+async def _save_challenge_debug(page, gmail: str, reason: str) -> Dict[str, str]:
+    """Save screenshot + page snapshot for debugging a Google challenge."""
+    debug = {"screenshot": "", "html": "", "summary": ""}
+    try:
+        ts = int(time.time())
+        safe = "".join(c if c.isalnum() else "_" for c in gmail)[:40]
+        png_path = f"{_DEBUG_DIR}/{safe}_{ts}.png"
+        html_path = f"{_DEBUG_DIR}/{safe}_{ts}.html"
+        txt_path = f"{_DEBUG_DIR}/{safe}_{ts}.txt"
+
+        try:
+            await page.screenshot(path=png_path, full_page=True, timeout=10000)
+            debug["screenshot"] = png_path
+        except Exception as exc:
+            log.debug("Challenge screenshot failed: %s", exc)
+
+        try:
+            html = await page.content()
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html)
+            debug["html"] = html_path
+        except Exception as exc:
+            log.debug("Challenge HTML save failed: %s", exc)
+
+        # Build a short text summary
+        try:
+            url = page.url or ""
+            title = await page.title() or ""
+            body_txt = ""
+            try:
+                body_txt = (await page.inner_text("body", timeout=5000) or "")[:500]
+            except Exception:
+                pass
+            summary = (
+                f"REASON: {reason}\n"
+                f"URL:    {url}\n"
+                f"TITLE:  {title}\n"
+                f"\n--- BODY (first 500 chars) ---\n{body_txt}\n"
+            )
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(summary)
+            debug["summary"] = summary
+        except Exception as exc:
+            log.debug("Challenge summary save failed: %s", exc)
+
+        _LAST_CHALLENGE_DEBUG[gmail] = debug
+        log.warning("Challenge debug saved → %s", png_path)
+    except Exception as exc:
+        log.warning("Challenge debug save crashed: %s", exc)
+    return debug
+
+
+async def _try_click_buttons(page, label_substrings: list, timeout: int = 3) -> bool:
+    """Try clicking the first visible button matching any of the given label substrings."""
+    for label in label_substrings:
+        try:
+            sel = (
+                f"button:has-text('{label}'), "
+                f"div[role='button']:has-text('{label}'), "
+                f"a:has-text('{label}'), "
+                f"input[type='submit'][value*='{label}']"
+            )
+            loc = page.locator(sel)
+            if await loc.count() > 0:
+                await loc.first.click(timeout=timeout * 1000)
+                log.info("Clicked button matching '%s'", label)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
     """Try to auto-handle Google's post-password challenges.
 
     Returns:
         None if no challenge / handled successfully → continue to 2FA
         Error code (str) if challenge cannot be handled → abort
+
+    On failure, saves screenshot + HTML to _DEBUG_DIR and stores paths in
+    _LAST_CHALLENGE_DEBUG[gmail] for the caller to retrieve.
     """
     try:
         cur_url = (page.url or "").lower()
@@ -1073,19 +1159,41 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
         # CAPTCHA detection
         if "recaptcha" in body or "i'm not a robot" in body or "captcha" in body:
             log.warning("CAPTCHA detected on post-password page: %s", page.url)
+            await _save_challenge_debug(page, gmail, "CAPTCHA detected")
             return LoginError.CAPTCHA
 
         # Account locked / disabled
         if "account disabled" in body or "حسابك معطّل" in body or "account has been disabled" in body:
             log.warning("Account locked/disabled: %s", gmail)
+            await _save_challenge_debug(page, gmail, "Account disabled")
             return LoginError.ACCOUNT_LOCKED
 
         # IP blocked indicators
         if "unusual traffic" in body or "حركة مرور غير عادية" in body:
             log.warning("Unusual traffic block: %s", page.url)
+            await _save_challenge_debug(page, gmail, "Unusual traffic")
             return LoginError.IP_BLOCKED
 
-        # "Verify it's you" / "Was this you?" challenges
+        # ── Soft prompts (Google-suggested but skippable) ──
+        # "Add a phone number" / "Add recovery email" suggestion (NOT a challenge)
+        soft_skip_indicators = [
+            "add a phone number", "add phone", "make sure you can sign in",
+            "add recovery email", "save this device", "stay signed in",
+            "don't ask again", "أضف رقم هاتف", "أضف بريد استرداد",
+            "تذكر الجهاز", "احفظ هذا الجهاز",
+        ]
+        is_soft_prompt = any(s in body for s in soft_skip_indicators) and "challenge" not in cur_url
+
+        if is_soft_prompt:
+            log.info("Soft prompt detected — trying Skip/Not now")
+            skipped = await _try_click_buttons(page, [
+                "Not now", "Skip", "Cancel", "ليس الآن", "تخطى", "تخطي", "إلغاء", "لاحقاً",
+            ])
+            if skipped:
+                await asyncio.sleep(2)
+                return None  # bypassed → continue
+
+        # ── Hard challenges ──
         is_challenge_page = (
             "challenge" in cur_url
             or "verify it's you" in body
@@ -1093,6 +1201,8 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
             or "تأكيد هويتك" in body
             or "هل هذا أنت" in body
             or "was this you" in body
+            or "confirm it's you" in body
+            or "trying to sign in" in body
         )
 
         if not is_challenge_page:
@@ -1100,36 +1210,42 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
 
         log.info("Google challenge detected on %s — attempting auto-handle", page.url)
 
-        # Attempt 1: Click "Yes, it's me" / "نعم، هذا أنا" confirmation buttons
-        yes_btn = page.locator(
-            "button:has-text('Yes'), "
-            "button:has-text('Yes, it'), "
-            "button:has-text('نعم'), "
-            "button:has-text(\"That's me\"), "
-            "button:has-text(\"That was me\"), "
-            "div[role='button']:has-text('Yes')"
-        )
-        try:
-            if await yes_btn.count() > 0:
-                await yes_btn.first.click()
-                log.info("Clicked 'Yes' confirmation button")
-                await asyncio.sleep(3)
-                # Re-read body to see if challenge cleared
-                try:
-                    body2 = (await page.inner_text("body", timeout=5000) or "").lower()
-                except Exception:
-                    body2 = ""
-                if "challenge" not in (page.url or "").lower() or "totp" in body2 or "code" in body2:
-                    return None  # cleared
-        except Exception as exc:
-            log.debug("Yes-button click failed: %s", exc)
+        # Attempt 1: "Yes, it's me" / "نعم" / "Continue" / "Next" buttons
+        clicked = await _try_click_buttons(page, [
+            "Yes, it", "Yes,", "That's me", "That was me", "It was me",
+            "Continue", "Next", "Confirm", "OK",
+            "نعم، هذا أنا", "نعم", "متابعة", "التالي", "تأكيد", "موافق",
+        ])
+        if clicked:
+            await asyncio.sleep(4)
+            try:
+                body2 = (await page.inner_text("body", timeout=5000) or "").lower()
+            except Exception:
+                body2 = ""
+            cur2 = (page.url or "").lower()
+            # If we moved past challenge OR landed on TOTP page → success
+            if "challenge" not in cur2 or "enter the code" in body2 or "totp" in body2 or "verification code" in body2:
+                log.info("Challenge cleared after click")
+                return None
 
-        # Attempt 2: Recovery email/phone challenge — we cannot answer this without user input
-        if "recovery" in body or "إيميل الاسترداد" in body or "phone number" in body:
-            log.warning("Recovery email/phone challenge — cannot auto-answer")
+        # ── Detect specific failure types for better diagnostics ──
+        if "recovery" in body or "إيميل الاسترداد" in body or "بريد الاسترداد" in body:
+            log.warning("Recovery email challenge — cannot auto-answer")
+            await _save_challenge_debug(page, gmail, "Recovery email required")
+            return LoginError.GOOGLE_CHALLENGE
+
+        if "phone number" in body or "رقم الهاتف" in body or "your phone" in body:
+            log.warning("Phone verification challenge — cannot auto-answer")
+            await _save_challenge_debug(page, gmail, "Phone verification required")
+            return LoginError.GOOGLE_CHALLENGE
+
+        if "another device" in body or "tap yes" in body or "another phone" in body or "جهاز آخر" in body:
+            log.warning("Device-tap challenge — cannot auto-answer")
+            await _save_challenge_debug(page, gmail, "Device-tap (another phone) required")
             return LoginError.GOOGLE_CHALLENGE
 
         # Generic challenge we couldn't handle
+        await _save_challenge_debug(page, gmail, "Unknown challenge")
         return LoginError.GOOGLE_CHALLENGE
 
     except Exception as exc:
@@ -2104,6 +2220,10 @@ async def verify_gemini_auto(
                 err_msg = _format_login_error(challenge_code)
                 await on_progress(_build_progress(1, error=err_msg))
                 result = {"success": False, "error": err_msg, "error_code": challenge_code}
+                # Attach debug screenshot/HTML for the admin notification
+                dbg = _LAST_CHALLENGE_DEBUG.get(gmail)
+                if dbg:
+                    result["debug"] = dbg
                 return result
 
             await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
