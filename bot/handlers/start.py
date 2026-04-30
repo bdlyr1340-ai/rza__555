@@ -491,10 +491,16 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
                 # Send screenshot of the Google page that blocked us
                 if screenshot_path:
                     try:
+                        # Detect SheerID rejection vs Google challenge for caption
+                        sheerid_errs = result.get("sheerid_errors") or []
+                        if sheerid_errs:
+                            cap = (f"📸 SheerID رفض التحقق (طلب #{ver_id})\n"
+                                   f"الأكواد: {sheerid_errs}")
+                        else:
+                            cap = f"📸 لقطة صفحة الرفض (طلب #{ver_id})"
                         with open(screenshot_path, "rb") as f:
                             await ctx.bot.send_photo(
-                                admin_id, photo=f,
-                                caption=f"📸 لقطة صفحة Google التي رفضت الدخول (طلب #{ver_id})",
+                                admin_id, photo=f, caption=cap,
                             )
                     except Exception as e:
                         log.warning("Failed to send debug screenshot: %s", e)
