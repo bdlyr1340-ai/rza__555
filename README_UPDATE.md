@@ -1,74 +1,67 @@
-# تحديث v4 — تجاوز Authenticator + سرعة + عداد
+# تحديث v5 — العداد + التشخيص
 
-  ## الملفات (نفسها كل مرة)
-  1. `bot/handlers/start.py`
-  2. `bot/services/sheerid.py`
+  ## الملفان (نفسهما كل مرة)
+  1. `bot/handlers/start.py`  ← **الأهم** (إصلاح العداد)
+  2. `bot/services/sheerid.py` ← (سرعة + Authenticator)
 
-  ضعهما فوق ملفاتك القديمة على Railway → Commit → Push.
-
-  ---
-
-  ## ⚡ مهم جداً — قبل أي شيء
-  **تأكد أنك حدّثت ملف `bot/handlers/start.py` فعلياً.** لو العداد مازال
-  `00:00` بعد التحديث، السبب الوحيد هو أن start.py لم يُحدّث على Railway.
-
-  طريقة التأكد: افتح ملف start.py على GitHub بعد الرفع وابحث عن كلمة:
-  ```
-  ticker_task = asyncio.create_task(_ticker())
-  ```
-  لو موجودة → التحديث وصل، العداد سيشتغل.
-  لو غير موجودة → الملف القديم لم يُستبدل.
+  ## كيف ترفعها على Railway
+  1. افتح GitHub → مستودع البوت
+  2. ادخل لمجلد `bot/handlers/` → اضغط على `start.py` → علامة القلم (Edit)
+  3. **امسح كل المحتوى** → الصق محتوى `start.py` الجديد من هذا الملف
+  4. Commit changes
+  5. كرّر نفس الخطوات لـ `bot/services/sheerid.py`
+  6. Railway سيعمل Redeploy تلقائياً (انتظر ~1 دقيقة)
 
   ---
 
-  ## ما الذي يصلحه هذا التحديث
+  ## ⏱ كيف تتأكد أن العداد سيعمل بعد الرفع
 
-  ### 1) خيار Authenticator أصبح يُضغط فعلاً ✅
-  في اللقطة السابقة وصلنا لصفحة الخيارات الخمسة وكان فيها:
+  ### علامة 1: في الكود
+  افتح ملف `start.py` على GitHub بعد الرفع وابحث عن:
   ```
-  🔘 Tap Yes on your phone or tablet
-  🔘 Use your phone or tablet to get a security code
-  🔘 Get a verification code from the Google Authenticator app  ← نريد هذا
-  🔘 Use your passkey
-  🔘 Try another way
+  TICKER STARTED
+  ```
+  لو موجود → ✅ الملف الجديد مرفوع.
+
+  ### علامة 2: في Logs على Railway
+  بعد الرفع، اذهب لـ Railway → web → **View Logs** ← هذا مهم جداً.
+
+  عندما تجرّب البوت، يجب أن ترى في الـ logs أسطراً مثل:
+  ```
+  ⏱ Ticker task created: <Task pending ...>
+  ⏱ TICKER STARTED for nefujifil305@gmail.com
+  ⏱ TICK #1 elapsed=2.0s step=0
+  ⏱ TICK #6 elapsed=12.0s step=2
+  ⏱ TICK #11 elapsed=22.0s step=3
   ```
 
-  البوت ضغط "Try another way" بنجاح، لكن **فشل في النقر على خيار
-  Authenticator** لأنه كان مكتوباً كـ `<li>` وليس `<button>`.
-
-  الحل: وسّعنا البحث ليشمل **كل أنواع العناصر** القابلة للنقر:
-  `button`, `div[role="button"]`, `div[role="link"]`,
-  `li[role="link"]`, `li`, `a`, `span`, و `input[type="submit"]`.
-
-  كذلك أضفنا فحص الرؤية (`is_visible`) والتمرير التلقائي (`scroll_into_view`)
-  قبل النقر، ضماناً لنجاح الضغطة.
-
-  ### 2) ⏩ تسريع تسجيل الدخول
-  أضفنا متغيّر بيئة جديد `SHEERID_SPEED_FACTOR` في الكود.
-
-  - القيمة الافتراضية الجديدة: **0.4** (يعني التأخيرات الإنسانية صارت 40% فقط
-    من الأصل) → أسرع بحوالي **2.5 ضعف**.
-  - لو أردت أسرع: ضع في Railway environment variables:
-    ```
-    SHEERID_SPEED_FACTOR=0.25
-    ```
-  - لو أردت العودة للسرعة الأصلية (لو ظهرت مشاكل كشف):
-    ```
-    SHEERID_SPEED_FACTOR=1.0
-    ```
-
-  ### 3) عدّاد الوقت ⏱
-  الكود فيه التيكر يعمل كل 3 ثوانٍ. **لو مازال جامد بعد هذا التحديث،
-  أرسل لي صورة من ملف start.py على GitHub بعد الرفع لأتأكد أنه فعلاً
-  تم استبداله، لأن الكود الجديد يجب أن يحدّث الوقت بدون أي عوائق.**
+  **أرسل لي صورة من هذه الـ logs لو العداد لم يتحرّك** —
+  سأعرف من خلالها بالضبط أين المشكلة:
+  - لو رأيت "TICKER STARTED" لكن لم تتحرّك الأرقام → مشكلة في تيليجرام
+  - لو لم ترَ "TICKER STARTED" → الملف القديم مازال يعمل
+  - لو رأيت "TICKER edit failed" → سأعرف السبب الحقيقي
 
   ---
 
-  ## ماذا أفعل لو فشل مرة أخرى؟
-  أرسل لي:
-  1. اللقطة الجديدة من البوت.
-  2. النص (REASON, URL, BODY) كما قبل.
-  3. تأكيد أن start.py الجديد فعلاً مرفوع على GitHub.
+  ## ما الجديد في v5
 
-  سنحلّها معاً.
+  ### العداد
+  - يحدّث كل **2 ثانية** (بدلاً من 3) → أكثر استجابة
+  - يستخدم `ctx.bot.edit_message_text` مباشرة (أكثر استقراراً)
+  - يطبع في الـ logs كل 10 ثوانٍ ليثبت أنه يعمل
+  - يطبع سبب أي فشل ليساعدنا في التشخيص
+
+  ### السرعة
+  متغيّر `SHEERID_SPEED_FACTOR` افتراضياً 0.4 (أسرع 2.5×).
+  ضع `0.25` للسرعة القصوى.
+
+  ### Authenticator
+  يضغط على خيار `<li>` و `<div role="link">` بنجاح.
+
+  ---
+
+  ## ⚠️ تنبيه مهم
+  لو رفعت v4 سابقاً ثم رفعت v5 الآن، **انتظر دقيقتين** بعد الـ Commit
+  لتتأكد أن Railway أكمل الـ Build و الـ Deploy. لا تجرّب البوت قبل
+  أن ترى "Deployment successful" في Railway.
   
