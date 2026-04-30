@@ -1119,22 +1119,41 @@ async def _save_challenge_debug(page, gmail: str, reason: str) -> Dict[str, str]
 
 
 async def _try_click_buttons(page, label_substrings: list, timeout: int = 3) -> bool:
-    """Try clicking the first visible button matching any of the given label substrings."""
+    """Try clicking the first visible element matching any of the given label substrings.
+
+    Searches across button/link/list-item elements. Returns True on success.
+    """
     for label in label_substrings:
-        try:
-            sel = (
-                f"button:has-text('{label}'), "
-                f"div[role='button']:has-text('{label}'), "
-                f"a:has-text('{label}'), "
-                f"input[type='submit'][value*='{label}']"
-            )
-            loc = page.locator(sel)
-            if await loc.count() > 0:
-                await loc.first.click(timeout=timeout * 1000)
-                log.info("Clicked button matching '%s'", label)
-                return True
-        except Exception:
-            continue
+        # Order matters: more specific first
+        selectors = [
+            f"button:has-text(\"{label}\")",
+            f"div[role='button']:has-text(\"{label}\")",
+            f"div[role='link']:has-text(\"{label}\")",
+            f"li[role='link']:has-text(\"{label}\")",
+            f"li:has-text(\"{label}\")",
+            f"a:has-text(\"{label}\")",
+            f"span:has-text(\"{label}\")",
+            f"input[type='submit'][value*=\"{label}\"]",
+        ]
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                count = await loc.count()
+                if count == 0:
+                    continue
+                # Find first visible element
+                for i in range(min(count, 5)):
+                    el = loc.nth(i)
+                    try:
+                        if await el.is_visible(timeout=1000):
+                            await el.scroll_into_view_if_needed(timeout=1500)
+                            await el.click(timeout=timeout * 1000)
+                            log.info("Clicked '%s' via selector %s", label, sel[:60])
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
     return False
 
 
@@ -1630,8 +1649,12 @@ async def verify_gemini_auto(
             : originalQuery(parameters);
     """
 
+    # Speed-up factor: lower = faster login. Set 0.4 (≈60% faster) by default.
+    # Override via env var SHEERID_SPEED_FACTOR (e.g. 0.3 for very fast, 1.0 for original).
+    _SPEED = float(os.getenv("SHEERID_SPEED_FACTOR", "0.4"))
+
     async def _human_delay(min_s=0.5, max_s=2.0):
-        await asyncio.sleep(random.uniform(min_s, max_s))
+        await asyncio.sleep(random.uniform(min_s * _SPEED, max_s * _SPEED))
 
     async def _human_mouse_move(p):
         """Simulate random mouse movements to appear human."""
