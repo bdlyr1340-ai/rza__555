@@ -1,1 +1,35 @@
+هذا هو جزء إرسال لقطة الشاشة للأدمن داخل bot/handlers/start.py:
 
+        debug = result.get("debug") or {}
+        screenshot_path = debug.get("screenshot") or ""
+        shot_caption = (
+            f"📸 لقطة نجاح الطلب #{ver_id}"
+            if result.get("success")
+            else f"📸 لقطة خطأ الطلب #{ver_id}"
+        )
+
+        for admin_id in config.ADMIN_IDS:
+            await ctx.bot.send_message(admin_id, admin_text)
+            if screenshot_path:
+                with open(screenshot_path, "rb") as f:
+                    await ctx.bot.send_photo(
+                        admin_id,
+                        photo=f,
+                        caption=shot_caption,
+                    )
+
+وهذا جزء حفظ اللقطة داخل bot/services/sheerid.py قبل إغلاق المتصفح:
+
+        try:
+            if isinstance(result, dict) and page is not None:
+                old_debug = result.get("debug") or {}
+                if not old_debug.get("screenshot"):
+                    status_word = "SUCCESS" if result.get("success") else "ERROR"
+                    reason = result.get("error") or result.get("step") or status_word
+                    result["debug"] = await _save_challenge_debug(
+                        page,
+                        gmail,
+                        f"{status_word}: {reason}",
+                    )
+        except Exception as exc:
+            log.debug("Final screenshot attach failed: %s", exc)
