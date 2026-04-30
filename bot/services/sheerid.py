@@ -1067,7 +1067,7 @@ _LAST_CHALLENGE_DEBUG: Dict[str, Dict[str, str]] = {}
 
 
 async def _save_challenge_debug(page, gmail: str, reason: str) -> Dict[str, str]:
-    """Save screenshot + page snapshot for debugging a Google challenge."""
+    """Save screenshot + page snapshot for admin debug on success or failure."""
     debug = {"screenshot": "", "html": "", "summary": ""}
     try:
         ts = int(time.time())
@@ -1118,108 +1118,23 @@ async def _save_challenge_debug(page, gmail: str, reason: str) -> Dict[str, str]
     return debug
 
 
-async def _save_sheerid_debug(page, gmail: str, reason: str,
-                               api_response: Optional[Dict] = None) -> Dict[str, str]:
-    """Save screenshot + SheerID API response for fraud/reject debugging."""
-    debug = {"screenshot": "", "html": "", "summary": ""}
-    try:
-        ts = int(time.time())
-        safe = "".join(c if c.isalnum() else "_" for c in gmail)[:40]
-        png_path = f"{_DEBUG_DIR}/sheerid_{safe}_{ts}.png"
-        json_path = f"{_DEBUG_DIR}/sheerid_{safe}_{ts}.json"
-        txt_path = f"{_DEBUG_DIR}/sheerid_{safe}_{ts}.txt"
-
-        # Screenshot of whatever page the browser is currently on (if any)
-        if page is not None:
-            try:
-                await page.screenshot(path=png_path, full_page=True, timeout=10000)
-                debug["screenshot"] = png_path
-            except Exception as exc:
-                log.debug("SheerID screenshot failed: %s", exc)
-
-        # Save SheerID API response JSON
-        try:
-            if api_response is not None:
-                import json as _json
-                with open(json_path, "w", encoding="utf-8") as f:
-                    _json.dump(api_response, f, indent=2, ensure_ascii=False, default=str)
-                debug["html"] = json_path  # reuse html field for the JSON file
-        except Exception as exc:
-            log.debug("SheerID JSON save failed: %s", exc)
-
-        # Build summary
-        try:
-            url = ""
-            title = ""
-            if page is not None:
-                try:
-                    url = page.url or ""
-                    title = await page.title() or ""
-                except Exception:
-                    pass
-            error_ids = []
-            current_step = ""
-            if api_response:
-                error_ids = api_response.get("errorIds", [])
-                current_step = api_response.get("currentStep", "")
-            summary = (
-                f"REASON:        {reason}\n"
-                f"SHEERID STEP:  {current_step}\n"
-                f"ERROR IDS:     {error_ids}\n"
-                f"BROWSER URL:   {url}\n"
-                f"BROWSER TITLE: {title}\n"
-            )
-            if api_response:
-                summary += f"\n--- SHEERID RESPONSE ---\n{str(api_response)[:1500]}\n"
-            with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(summary)
-            debug["summary"] = summary
-        except Exception as exc:
-            log.debug("SheerID summary save failed: %s", exc)
-
-        _LAST_CHALLENGE_DEBUG[gmail] = debug
-        log.warning("SheerID debug saved → %s", png_path or txt_path)
-    except Exception as exc:
-        log.warning("SheerID debug save crashed: %s", exc)
-    return debug
-
-
 async def _try_click_buttons(page, label_substrings: list, timeout: int = 3) -> bool:
-    """Try clicking the first visible element matching any of the given label substrings.
-
-    Searches across button/link/list-item elements. Returns True on success.
-    """
+    """Try clicking the first visible button matching any of the given label substrings."""
     for label in label_substrings:
-        # Order matters: more specific first
-        selectors = [
-            f"button:has-text(\"{label}\")",
-            f"div[role='button']:has-text(\"{label}\")",
-            f"div[role='link']:has-text(\"{label}\")",
-            f"li[role='link']:has-text(\"{label}\")",
-            f"li:has-text(\"{label}\")",
-            f"a:has-text(\"{label}\")",
-            f"span:has-text(\"{label}\")",
-            f"input[type='submit'][value*=\"{label}\"]",
-        ]
-        for sel in selectors:
-            try:
-                loc = page.locator(sel)
-                count = await loc.count()
-                if count == 0:
-                    continue
-                # Find first visible element
-                for i in range(min(count, 5)):
-                    el = loc.nth(i)
-                    try:
-                        if await el.is_visible(timeout=1000):
-                            await el.scroll_into_view_if_needed(timeout=1500)
-                            await el.click(timeout=timeout * 1000)
-                            log.info("Clicked '%s' via selector %s", label, sel[:60])
-                            return True
-                    except Exception:
-                        continue
-            except Exception:
-                continue
+        try:
+            sel = (
+                f"button:has-text('{label}'), "
+                f"div[role='button']:has-text('{label}'), "
+                f"a:has-text('{label}'), "
+                f"input[type='submit'][value*='{label}']"
+            )
+            loc = page.locator(sel)
+            if await loc.count() > 0:
+                await loc.first.click(timeout=timeout * 1000)
+                log.info("Clicked button matching '%s'", label)
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -1275,7 +1190,7 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
                 "Not now", "Skip", "Cancel", "ليس الآن", "تخطى", "تخطي", "إلغاء", "لاحقاً",
             ])
             if skipped:
-                await asyncio.sleep(0.7)
+                await asyncio.sleep(2)
                 return None  # bypassed → continue
 
         # ── Hard challenges ──
@@ -1302,7 +1217,7 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
             "نعم، هذا أنا", "نعم", "متابعة", "التالي", "تأكيد", "موافق",
         ])
         if clicked:
-            await asyncio.sleep(1.4)
+            await asyncio.sleep(4)
             try:
                 body2 = (await page.inner_text("body", timeout=5000) or "").lower()
             except Exception:
@@ -1324,64 +1239,12 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
             await _save_challenge_debug(page, gmail, "Phone verification required")
             return LoginError.GOOGLE_CHALLENGE
 
-        # ── Device-tap prompt: try escaping via "Try another way" → Authenticator ──
-        is_device_tap = (
-            "/challenge/dp" in cur_url
-            or "another device" in body
-            or "tap yes" in body
-            or "another phone" in body
-            or "check your" in body  # "Check your Galaxy S21 Ultra 5G"
-            or "google sent a notification" in body
-            or "جهاز آخر" in body
-            or "تحقق من" in body
-        )
-        if is_device_tap:
-            log.info("Device-tap challenge detected — trying 'Try another way' → Authenticator")
-            switched = await _try_click_buttons(page, [
-                "Try another way", "Try another method",
-                "جرّب طريقة أخرى", "طريقة أخرى", "جرب طريقة اخرى",
-            ])
-            if switched:
-                await asyncio.sleep(1.4)
-                # Look for the Authenticator option in the list
-                auth_clicked = await _try_click_buttons(page, [
-                    "Get a verification code from the Google Authenticator app",
-                    "Get a verification code",
-                    "Google Authenticator",
-                    "Authenticator app",
-                    "Authenticator",
-                    "Enter a code",
-                    "تطبيق Google Authenticator",
-                    "تطبيق Authenticator",
-                    "احصل على رمز",
-                ])
-                if auth_clicked:
-                    await asyncio.sleep(1.4)
-                    log.info("Switched to authenticator path successfully")
-                    # Return None so the normal 2FA/TOTP flow handles entering the code
-                    return None
-                log.warning("Found 'Try another way' but no Authenticator option")
-            else:
-                log.warning("Could not find 'Try another way' button on device-tap page")
-            await _save_challenge_debug(page, gmail, "Device-tap (failed to switch to authenticator)")
+        if "another device" in body or "tap yes" in body or "another phone" in body or "جهاز آخر" in body:
+            log.warning("Device-tap challenge — cannot auto-answer")
+            await _save_challenge_debug(page, gmail, "Device-tap (another phone) required")
             return LoginError.GOOGLE_CHALLENGE
 
-        # Generic challenge we couldn't handle — try one last "Try another way" rescue
-        last_resort = await _try_click_buttons(page, [
-            "Try another way", "Try another method",
-            "جرّب طريقة أخرى", "طريقة أخرى",
-        ])
-        if last_resort:
-            await asyncio.sleep(1.4)
-            auth_clicked = await _try_click_buttons(page, [
-                "Get a verification code", "Google Authenticator",
-                "Authenticator app", "Authenticator",
-            ])
-            if auth_clicked:
-                await asyncio.sleep(1.4)
-                log.info("Generic challenge bypassed via authenticator")
-                return None
-
+        # Generic challenge we couldn't handle
         await _save_challenge_debug(page, gmail, "Unknown challenge")
         return LoginError.GOOGLE_CHALLENGE
 
@@ -1543,21 +1406,21 @@ async def _google_login_and_claim(
                 return False
 
             # Check for 2FA prompt
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(2)
             totp_input = page.locator('input[type="tel"]:visible')
             if await totp_input.count() > 0:
                 await totp_input.fill(totp_code)
                 totp_next = page.get_by_role("button", name="Next")
                 if await totp_next.count() > 0:
                     await totp_next.click()
-                await asyncio.sleep(1.05)
+                await asyncio.sleep(3)
 
             await on_progress(_build_progress(6))
 
             # Step 7-8: Check offer & Claim — navigate to redirect URL
             await on_progress(_build_progress(7))
             await page.goto(redirect_url, wait_until="domcontentloaded", timeout=90000)
-            await asyncio.sleep(1.05)
+            await asyncio.sleep(3)
 
             # Try to click any "Claim" / "Get offer" / "Continue" button
             for selector in [
@@ -1571,13 +1434,13 @@ async def _google_login_and_claim(
                 btn = page.locator(selector).first
                 if await btn.count() > 0:
                     await btn.click()
-                    await asyncio.sleep(1.05)
+                    await asyncio.sleep(3)
                     break
 
             await on_progress(_build_progress(8))
 
             # Step 9: Process payment
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(2)
             # Check for any confirmation buttons
             for selector in [
                 "button:has-text('Subscribe')",
@@ -1588,11 +1451,11 @@ async def _google_login_and_claim(
                 btn = page.locator(selector).first
                 if await btn.count() > 0:
                     await btn.click()
-                    await asyncio.sleep(0.7)
+                    await asyncio.sleep(2)
                     break
 
             await on_progress(_build_progress(9))
-            await asyncio.sleep(0.35)
+            await asyncio.sleep(1)
             await on_progress(_build_progress(10))
 
             return True
@@ -1715,12 +1578,8 @@ async def verify_gemini_auto(
             : originalQuery(parameters);
     """
 
-    # Speed-up factor: lower = faster login. Set 0.25 (≈4× faster) by default.
-    # Override via env var SHEERID_SPEED_FACTOR (e.g. 0.15 for very fast, 1.0 for original).
-    _SPEED = float(os.getenv("SHEERID_SPEED_FACTOR", "0.25"))
-
     async def _human_delay(min_s=0.5, max_s=2.0):
-        await asyncio.sleep(random.uniform(min_s * _SPEED, max_s * _SPEED))
+        await asyncio.sleep(random.uniform(min_s, max_s))
 
     async def _human_mouse_move(p):
         """Simulate random mouse movements to appear human."""
@@ -2090,7 +1949,7 @@ async def verify_gemini_auto(
                 try:
                     await ctx_browser.add_cookies(saved["cookies"])
                     await page.goto("https://myaccount.google.com/", wait_until="domcontentloaded", timeout=30_000)
-                    await asyncio.sleep(0.7)
+                    await asyncio.sleep(2)
                     cur_url = page.url
                     if "accounts.google.com/signin" in cur_url or "accounts.google.com/v3/signin" in cur_url:
                         log.info("Saved cookies expired for %s — falling back to login", gmail)
@@ -2370,7 +2229,7 @@ async def verify_gemini_auto(
             await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
     
             # ── Step 3: المصادقة الثنائية — handle 2FA ──
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(2)
     
             # Google 2FA comes in many forms; try to detect and handle each
             is_2fa_page = "challenge" in page.url.lower()
@@ -2406,7 +2265,7 @@ async def verify_gemini_auto(
                             totp_next = page.get_by_role("button", name="Next")
                         if await totp_next.count() > 0:
                             await totp_next.click()
-                        await asyncio.sleep(1.4)
+                        await asyncio.sleep(4)
 
                         # Check for 2FA error
                         totp_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
@@ -2457,7 +2316,7 @@ async def verify_gemini_auto(
                             await page.wait_for_load_state("domcontentloaded", timeout=10000)
                         except Exception:
                             pass
-                        await asyncio.sleep(0.7)
+                        await asyncio.sleep(2)
     
                         # Log what options are available (with short timeout)
                         try:
@@ -2491,7 +2350,7 @@ async def verify_gemini_auto(
                                 await page.wait_for_load_state("domcontentloaded", timeout=10000)
                             except Exception:
                                 pass
-                            await asyncio.sleep(0.7)
+                            await asyncio.sleep(2)
     
                             # Now look for TOTP input
                             totp_input2 = page.locator(
@@ -2508,7 +2367,7 @@ async def verify_gemini_auto(
                                     totp_next2 = page.get_by_role("button", name="Next")
                                 if await totp_next2.count() > 0:
                                     await totp_next2.click()
-                                await asyncio.sleep(1.4)
+                                await asyncio.sleep(4)
     
                                 # Check for 2FA error after submission
                                 totp_err = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
@@ -2569,7 +2428,7 @@ async def verify_gemini_auto(
                                 await page.wait_for_load_state("domcontentloaded", timeout=10000)
                             except Exception:
                                 pass
-                            await asyncio.sleep(0.7)
+                            await asyncio.sleep(2)
     
                             # Now look for TOTP input
                             totp_input3 = page.locator(
@@ -2586,7 +2445,7 @@ async def verify_gemini_auto(
                                     totp_next3 = page.get_by_role("button", name="Next")
                                 if await totp_next3.count() > 0:
                                     await totp_next3.click()
-                                await asyncio.sleep(1.4)
+                                await asyncio.sleep(4)
     
                                 totp_err3 = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
                                 if await totp_err3.count() > 0:
@@ -2704,14 +2563,10 @@ async def verify_gemini_auto(
                 result = {"success": False, "error": err_msg}
                 return result
             if data.get("currentStep") == "error":
-                err_ids = data.get("errorIds", [])
-                err_msg = f"خطأ SheerID: {err_ids}"
+                err_msg = f"خطأ SheerID: {data.get('errorIds', [])}"
                 log.error("SheerID student info error: %s", data)
                 await on_progress(_build_progress(4, error=err_msg))
-                dbg = await _save_sheerid_debug(page, gmail,
-                    f"SheerID student info rejected: {err_ids}", api_response=data)
-                result = {"success": False, "error": err_msg, "debug": dbg,
-                          "sheerid_errors": err_ids}
+                result = {"success": False, "error": err_msg}
                 return result
 
             await on_progress(_build_progress(5, detail="تم إرسال البيانات، رفع المستندات..."))
@@ -2787,10 +2642,7 @@ async def verify_gemini_auto(
                         err_ids = poll_data.get("errorIds", [])
                         err_msg = f"SheerID رفض التحقق: {err_ids}"
                         await on_progress(_build_progress(6, error=err_msg))
-                        dbg = await _save_sheerid_debug(page, gmail,
-                            f"SheerID poll rejected: {err_ids}", api_response=poll_data)
-                        result = {"success": False, "error": err_msg, "debug": dbg,
-                                  "sheerid_errors": err_ids}
+                        result = {"success": False, "error": err_msg}
                         return result
                     else:
                         remaining = (max_polls - poll_i - 1) * poll_interval
@@ -2804,10 +2656,7 @@ async def verify_gemini_auto(
                 err_ids = data.get("errorIds", [])
                 err_msg = f"SheerID رفض التحقق: {err_ids}"
                 await on_progress(_build_progress(6, error=err_msg))
-                dbg = await _save_sheerid_debug(page, gmail,
-                    f"SheerID completeDocUpload rejected: {err_ids}", api_response=data)
-                result = {"success": False, "error": err_msg, "debug": dbg,
-                          "sheerid_errors": err_ids}
+                result = {"success": False, "error": err_msg}
                 return result
 
         # ── Step 7: المطالبة بالعرض — claim via redirect ──
@@ -2815,7 +2664,7 @@ async def verify_gemini_auto(
             try:
                 log.info("Navigating to redirect URL: %s", redirect_url)
                 await page.goto(redirect_url, wait_until="domcontentloaded", timeout=60_000)
-                await asyncio.sleep(1.05)
+                await asyncio.sleep(3)
 
                 # Log what Google shows at the redirect URL
                 claim_url = page.url
@@ -2843,7 +2692,7 @@ async def verify_gemini_auto(
                         btn_text = await btn.text_content()
                         log.info("Clicking claim button: '%s'", btn_text)
                         await btn.click()
-                        await asyncio.sleep(1.4)
+                        await asyncio.sleep(4)
                         claimed = True
                         break
 
@@ -2857,7 +2706,7 @@ async def verify_gemini_auto(
                 await on_progress(_build_progress(7, detail=f"تم المطالبة ({after_claim_title})، معالجة الدفع..."))
 
                 # ── Step 8: معالجة الدفع — auto-fill payment card if needed ──
-                await asyncio.sleep(0.7)
+                await asyncio.sleep(2)
 
                 # Check if Google asks for a payment method (card form)
                 card_input = page.locator(
@@ -2942,7 +2791,7 @@ async def verify_gemini_auto(
                         btn_text = await btn.text_content()
                         log.info("Clicking confirm button: '%s'", btn_text)
                         await btn.click()
-                        await asyncio.sleep(1.05)
+                        await asyncio.sleep(3)
                         break
 
                 final_url = page.url
@@ -2997,6 +2846,18 @@ async def verify_gemini_auto(
         return result
 
     finally:
+        # Attach a final screenshot for admin notification on BOTH success and failure.
+        # This is intentionally placed before browser cleanup so the page still exists.
+        try:
+            if isinstance(result, dict) and page is not None:
+                old_debug = result.get("debug") or {}
+                if not old_debug.get("screenshot"):
+                    status_word = "SUCCESS" if result.get("success") else "ERROR"
+                    reason = result.get("error") or result.get("step") or status_word
+                    result["debug"] = await _save_challenge_debug(page, gmail, f"{status_word}: {reason}")
+        except Exception as exc:
+            log.debug("Final screenshot attach failed: %s", exc)
+
         # Cloud browser cleanup
         if _cloud_cleanup:
             try:
