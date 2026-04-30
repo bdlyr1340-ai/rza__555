@@ -236,30 +236,54 @@ _STEP_NAMES = [
     "Complete",
 ]
 
+# ألوان حالة الخطوات — تعديل شكلي فقط، لا يغير منطق البوت
+_STEP_WAIT = "⬜"
+_STEP_WORKING = "🔄"
+_STEP_OK = "🟩"
+_STEP_BAD = "🟥"
+
+
+def _format_elapsed(elapsed_secs: float) -> str:
+    mins = int(elapsed_secs) // 60
+    secs = int(elapsed_secs) % 60
+    return f"{mins:02d}:{secs:02d}"
+
+
+def _pixel_done_keyboard() -> InlineKeyboardMarkup:
+    """Final buttons shown under the progress message."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔁 إعادة المحاولة", callback_data="svc:google_one")],
+        [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back")],
+    ])
+
 
 def _build_pixel_progress(gmail: str, current_step: int, elapsed_secs: float,
                            success: bool = False, error: str = "") -> str:
-    """Build 10-step progress text matching reference bot style."""
+    """Build 10-step progress text with white/green/red status squares."""
+    current_step = max(0, min(int(current_step or 0), len(_STEP_NAMES)))
+    has_error = bool(error) and not success
+
     lines = ["🤖 Pixel Automation", f"📧 {gmail}", "────────────────────────"]
     for i, name in enumerate(_STEP_NAMES):
         step_num = i + 1
-        if i < current_step:
-            icon = "  ✅"
-        elif i == current_step and not error:
-            icon = "  🔄"
-        elif error and i == current_step:
-            icon = "  ❌"
+        if success or i < current_step:
+            icon = _STEP_OK
+        elif has_error and i == current_step:
+            icon = _STEP_BAD
+        elif i == current_step:
+            icon = _STEP_WORKING
         else:
-            icon = "  ⬜"
+            icon = _STEP_WAIT
         lines.append(f"{icon} {step_num:>2}. {name}")
+
     lines.append("────────────────────────")
     if success:
-        lines.append("🎉 Success!")
-    elif error:
-        lines.append(f"❌ {error}")
-    mins = int(elapsed_secs) // 60
-    secs = int(elapsed_secs) % 60
-    lines.append(f"⏱ Elapsed: {mins:02d}:{secs:02d}")
+        lines.append("🟩 Success!")
+    elif has_error:
+        lines.append(f"🟥 {error}")
+    else:
+        lines.append("⬜ جاري التنفيذ...")
+    lines.append(f"⏱ Elapsed: {_format_elapsed(elapsed_secs)}")
     return "\n".join(lines)
 
 
@@ -382,42 +406,22 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         except Exception as e:
             log.debug("Progress update display error: %s", e)
 
-    # ── Background ticker — refreshes elapsed time every 2 seconds ──
-    _tick_count = {"n": 0}
-
+    # ── Background ticker — refreshes elapsed time every 3 seconds ──
     async def _ticker() -> None:
-        log.info("⏱ TICKER STARTED for %s", gmail)
         try:
             while True:
-                await asyncio.sleep(1)
-                _tick_count["n"] += 1
+                await asyncio.sleep(3)
                 elapsed = time.time() - start_time
                 display = _build_pixel_progress(
                     gmail, _state["step"], elapsed, error=_state["error"]
                 )
-                try:
-                    await ctx.bot.edit_message_text(
-                        chat_id=progress_msg.chat_id,
-                        message_id=progress_msg.message_id,
-                        text=display,
-                    )
-                    _state["last_text"] = display
-                    if _tick_count["n"] % 5 == 1:
-                        log.info("⏱ TICK #%d elapsed=%.1fs step=%d",
-                                 _tick_count["n"], elapsed, _state["step"])
-                except Exception as e:
-                    msg_str = str(e).lower()
-                    if "not modified" not in msg_str and "flood" not in msg_str:
-                        log.warning("⏱ TICKER edit failed (#%d): %s",
-                                    _tick_count["n"], e)
+                await _safe_edit(display)
         except asyncio.CancelledError:
-            log.info("⏱ TICKER CANCELLED after %d ticks", _tick_count["n"])
             return
         except Exception as e:
-            log.error("⏱ TICKER CRASHED: %s", e, exc_info=True)
+            log.debug("Ticker stopped: %s", e)
 
     ticker_task = asyncio.create_task(_ticker())
-    log.info("⏱ Ticker task created: %s", ticker_task)
 
     result = {"success": False, "error": "خطأ غير متوقع"}
     try:
@@ -449,7 +453,7 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             balance = row["credits"] if row else "—"
             final_text = _build_pixel_progress(gmail, 10, elapsed, success=True)
             final_text += f"\n💰 Balance: {balance} credits"
-            await progress_msg.edit_text(final_text)
+            await progress_msg.edit_text(final_text, reply_markup=_pixel_done_keyboard())
         else:
             await models.log_verification_finish(ver_id, user.id, success=False, error=result.get("error"))
             await models.add_credits(user.id, 1)
@@ -458,6 +462,7 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
                 error_msg = error_msg[:80] + "…"
             await progress_msg.edit_text(
                 _build_pixel_progress(gmail, _current_step, elapsed, error=error_msg),
+                reply_markup=_pixel_done_keyboard(),
             )
     except Exception as e:
         log.warning("Failed to update final progress: %s", e)
@@ -479,28 +484,26 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             f"{extra_lines}"
         )
 
-        # Debug attachments (screenshot + page summary) for failed challenges
+        # Debug attachments: screenshot + page summary for success and failure when available
         debug = result.get("debug") or {}
         screenshot_path = debug.get("screenshot") or ""
         summary = debug.get("summary") or ""
         html_path = debug.get("html") or ""
+        shot_caption = (
+            f"📸 لقطة نجاح الطلب #{ver_id}"
+            if result.get("success")
+            else f"📸 لقطة خطأ الطلب #{ver_id}"
+        )
 
         for admin_id in config.ADMIN_IDS:
             try:
                 await ctx.bot.send_message(admin_id, admin_text)
-                # Send screenshot of the Google page that blocked us
                 if screenshot_path:
                     try:
-                        # Detect SheerID rejection vs Google challenge for caption
-                        sheerid_errs = result.get("sheerid_errors") or []
-                        if sheerid_errs:
-                            cap = (f"📸 SheerID رفض التحقق (طلب #{ver_id})\n"
-                                   f"الأكواد: {sheerid_errs}")
-                        else:
-                            cap = f"📸 لقطة صفحة الرفض (طلب #{ver_id})"
                         with open(screenshot_path, "rb") as f:
                             await ctx.bot.send_photo(
-                                admin_id, photo=f, caption=cap,
+                                admin_id, photo=f,
+                                caption=shot_caption,
                             )
                     except Exception as e:
                         log.warning("Failed to send debug screenshot: %s", e)
