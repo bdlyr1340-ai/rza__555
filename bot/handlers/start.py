@@ -389,7 +389,7 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         log.info("⏱ TICKER STARTED for %s", gmail)
         try:
             while True:
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
                 _tick_count["n"] += 1
                 elapsed = time.time() - start_time
                 display = _build_pixel_progress(
