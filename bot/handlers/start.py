@@ -317,48 +317,87 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         reply_markup=ReplyKeyboardRemove(),
     )
 
-    _current_step = 0
+    # Shared state between progress callback and background ticker
+    _state = {
+        "step": 0,
+        "error": "",
+        "last_text": _build_pixel_progress(gmail, 0, 0),
+    }
+    _edit_lock = asyncio.Lock()
+
+    async def _safe_edit(text: str) -> None:
+        """Edit the progress message, swallowing 'message not modified' errors."""
+        async with _edit_lock:
+            if text == _state["last_text"]:
+                return
+            try:
+                await progress_msg.edit_text(text)
+                _state["last_text"] = text
+            except Exception as e:
+                # Common: "Message is not modified" or rate limit — ignore quietly
+                msg_str = str(e).lower()
+                if "not modified" not in msg_str and "flood" not in msg_str:
+                    log.debug("edit_text failed: %s", e)
 
     async def _update_progress(text: str) -> None:
-        nonlocal _current_step
         try:
             lower = text.lower()
             # Map internal progress text to 10-step index
+            step = _state["step"]
             if "تسجيل الدخول" in text or "الإيميل" in text or "1." in text:
-                _current_step = max(_current_step, 0)
+                step = max(step, 0)
             if "spam" in lower or "2." in text:
-                _current_step = max(_current_step, 1)
+                step = max(step, 1)
             if "كلمة السر" in text or "كلمة المرور" in text or "password" in lower or "3." in text:
-                _current_step = max(_current_step, 2)
+                step = max(step, 2)
             if "2fa" in lower or "المصادقة" in text or "الثنائية" in text or "4." in text:
-                _current_step = max(_current_step, 3)
+                step = max(step, 3)
             if "الجلسة المحفوظة" in text or "تم تسجيل الدخول" in text or "login succeeded" in lower:
-                _current_step = max(_current_step, 4)
+                step = max(step, 4)
             if "sheerid" in lower or "التحقق" in text:
-                _current_step = max(_current_step, 4)
+                step = max(step, 4)
             if "student" in lower or "بيانات" in text or "6." in text:
-                _current_step = max(_current_step, 5)
+                step = max(step, 5)
             if "upload" in lower or "مستند" in text or "7." in text:
-                _current_step = max(_current_step, 6)
+                step = max(step, 6)
             if "offer" in lower or "عرض" in text or "claim" in lower:
-                _current_step = max(_current_step, 7)
+                step = max(step, 7)
             if "payment" in lower or "دفع" in text or "9." in text:
-                _current_step = max(_current_step, 8)
+                step = max(step, 8)
             if "نجاح" in text or "success" in lower or "🎉" in text:
-                _current_step = 9
+                step = 9
 
-            elapsed = time.time() - start_time
             err = ""
             if "❌" in text or "فشل" in text or "خطأ" in text:
-                # Strip markdown and trim
                 err = text.replace("*", "").replace("_", "").strip()
-                if len(err) > 80:
-                    err = err[:80] + "…"
+                if len(err) > 100:
+                    err = err[:100] + "…"
 
-            display = _build_pixel_progress(gmail, _current_step, elapsed, error=err)
-            await progress_msg.edit_text(display)
+            _state["step"] = step
+            _state["error"] = err
+
+            elapsed = time.time() - start_time
+            display = _build_pixel_progress(gmail, step, elapsed, error=err)
+            await _safe_edit(display)
         except Exception as e:
             log.debug("Progress update display error: %s", e)
+
+    # ── Background ticker — refreshes elapsed time every 3 seconds ──
+    async def _ticker() -> None:
+        try:
+            while True:
+                await asyncio.sleep(3)
+                elapsed = time.time() - start_time
+                display = _build_pixel_progress(
+                    gmail, _state["step"], elapsed, error=_state["error"]
+                )
+                await _safe_edit(display)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.debug("Ticker stopped: %s", e)
+
+    ticker_task = asyncio.create_task(_ticker())
 
     result = {"success": False, "error": "خطأ غير متوقع"}
     try:
@@ -372,8 +411,16 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as exc:
         log.exception("Pixel auto crashed ver_id=%s", ver_id)
         result = {"success": False, "error": str(exc)}
+    finally:
+        # Stop the ticker before final edit
+        ticker_task.cancel()
+        try:
+            await ticker_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     elapsed = time.time() - start_time
+    _current_step = _state["step"]
 
     try:
         if result.get("success"):
@@ -411,9 +458,47 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             f"الوقت: {int(elapsed)}s\n"
             f"{extra_lines}"
         )
+
+        # Debug attachments (screenshot + page summary) for failed challenges
+        debug = result.get("debug") or {}
+        screenshot_path = debug.get("screenshot") or ""
+        summary = debug.get("summary") or ""
+        html_path = debug.get("html") or ""
+
         for admin_id in config.ADMIN_IDS:
             try:
                 await ctx.bot.send_message(admin_id, admin_text)
+                # Send screenshot of the Google page that blocked us
+                if screenshot_path:
+                    try:
+                        with open(screenshot_path, "rb") as f:
+                            await ctx.bot.send_photo(
+                                admin_id, photo=f,
+                                caption=f"📸 لقطة صفحة Google التي رفضت الدخول (طلب #{ver_id})",
+                            )
+                    except Exception as e:
+                        log.warning("Failed to send debug screenshot: %s", e)
+                if summary:
+                    try:
+                        # Trim to Telegram message limit
+                        snippet = summary[:3500]
+                        await ctx.bot.send_message(
+                            admin_id,
+                            f"🔍 تفاصيل الصفحة (طلب #{ver_id})\n<pre>{snippet}</pre>",
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        log.warning("Failed to send debug summary: %s", e)
+                if html_path:
+                    try:
+                        with open(html_path, "rb") as f:
+                            await ctx.bot.send_document(
+                                admin_id, document=f,
+                                filename=f"page_{ver_id}.html",
+                                caption=f"📄 HTML كامل للصفحة (طلب #{ver_id})",
+                            )
+                    except Exception as e:
+                        log.warning("Failed to send debug HTML: %s", e)
             except Exception as e:
                 log.warning("Failed to notify admin %s: %s", admin_id, e)
     except Exception as e:
