@@ -1036,7 +1036,7 @@ _LOGIN_ERROR_HINTS = {
     LoginError.WRONG_PASSWORD: "كلمة السر التي أدخلتها غير صحيحة. تأكد منها وأعد المحاولة.",
     LoginError.WRONG_2FA: "رمز 2FA غير صحيح. تحقق من ضبط ساعة الجهاز ومن المفتاح السري Base32.",
     LoginError.NEEDS_2FA: "الحساب يتطلب مفتاح المصادقة الثنائية (2FA Secret) — أرسله في الحقل المخصص.",
-    LoginError.GOOGLE_CHALLENGE: "Google يطلب التحقق من الهوية (إيميل احتياطي/هاتف) — جرّب من جهاز عادي أولاً.",
+    LoginError.GOOGLE_CHALLENGE: "Google يطلب التحقق عبر إشعار على هاتف الحساب (Device-tap) ولم نستطع التحويل تلقائياً إلى Google Authenticator. الحل: 1) فعّل Google Authenticator على الحساب وأرسل الـ TOTP Secret للبوت، 2) أو سجّل دخول مرة واحدة من متصفح عادي على نفس الـ IP، 3) أو اضغط Yes على إشعار الهاتف يدوياً ثم أعد المحاولة.",
     LoginError.CAPTCHA: "Google يطلب CAPTCHA — استخدم Browserless مع بروكسي سكني، أو انتظر قليلاً.",
     LoginError.IP_BLOCKED: "Google يحجب IP السيرفر — استخدم بروكسي سكني (Residential).",
     LoginError.TIMEOUT: "انتهت المهلة — البروكسي بطيء أو الاتصال ضعيف.",
@@ -1136,6 +1136,101 @@ async def _try_click_buttons(page, label_substrings: list, timeout: int = 3) -> 
         except Exception:
             continue
     return False
+
+
+
+async def _switch_to_totp_method(page, gmail: str) -> bool:
+    """When Google shows a Device-tap / Phone-prompt 2FA challenge, try to
+    switch to the Google Authenticator (TOTP) method by clicking
+    "Try another way" and then selecting the Authenticator option.
+
+    Returns True if the page is now showing a TOTP code input field.
+    """
+    try:
+        log.info("Device-tap detected — trying to switch to Authenticator (TOTP) for %s", gmail)
+
+        # Step 1: click "Try another way" / "جرّب طريقة أخرى"
+        try_another_labels = [
+            "Try another way", "Try another method", "Choose another way",
+            "More ways to verify", "Other ways to verify",
+            "جرب طريقة أخرى", "جرّب طريقة أخرى", "تجربة طريقة أخرى",
+            "اختر طريقة أخرى", "طريقة أخرى",
+        ]
+        clicked = False
+        for label in try_another_labels:
+            try:
+                sel = (
+                    f"button:has-text('{label}'), "
+                    f"a:has-text('{label}'), "
+                    f"div[role='button']:has-text('{label}'), "
+                    f"div[role='link']:has-text('{label}')"
+                )
+                loc = page.locator(sel)
+                if await loc.count() > 0:
+                    await loc.first.click(timeout=4000)
+                    clicked = True
+                    log.info("Clicked '%s'", label)
+                    break
+            except Exception:
+                continue
+
+        if not clicked:
+            log.warning("Could not find 'Try another way' link")
+            return False
+
+        await asyncio.sleep(3)
+
+        # Step 2: on the method-chooser page, pick Authenticator / TOTP
+        authenticator_labels = [
+            "Google Authenticator",
+            "Get a verification code from the Google Authenticator app",
+            "Get a verification code from your authenticator app",
+            "Authenticator app",
+            "verification code from",
+            "Use your Google Authenticator",
+            "تطبيق Google Authenticator",
+            "تطبيق المصادقة",
+            "رمز التحقق من تطبيق",
+            "رمز من تطبيق المصادقة",
+        ]
+        picked = False
+        for label in authenticator_labels:
+            try:
+                sel = (
+                    f"li:has-text('{label}'), "
+                    f"div[role='link']:has-text('{label}'), "
+                    f"div[role='button']:has-text('{label}'), "
+                    f"button:has-text('{label}'), "
+                    f"a:has-text('{label}')"
+                )
+                loc = page.locator(sel)
+                if await loc.count() > 0:
+                    await loc.first.click(timeout=4000)
+                    picked = True
+                    log.info("Picked Authenticator option matching '%s'", label)
+                    break
+            except Exception:
+                continue
+
+        if not picked:
+            log.warning("Could not find Authenticator option in chooser list")
+            return False
+
+        await asyncio.sleep(3)
+
+        # Step 3: confirm the TOTP code input is now visible
+        try:
+            totp_input = page.locator('input[type="tel"]:visible, input[name="totpPin"]:visible, input[autocomplete="one-time-code"]:visible')
+            await totp_input.first.wait_for(state="visible", timeout=8000)
+            log.info("TOTP input is now visible — switch succeeded")
+            return True
+        except Exception:
+            log.warning("TOTP input did not appear after switching method")
+            return False
+
+    except Exception as exc:
+        log.warning("_switch_to_totp_method crashed: %s", exc)
+        return False
 
 
 async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
@@ -1240,8 +1335,13 @@ async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
             return LoginError.GOOGLE_CHALLENGE
 
         if "another device" in body or "tap yes" in body or "another phone" in body or "جهاز آخر" in body:
-            log.warning("Device-tap challenge — cannot auto-answer")
-            await _save_challenge_debug(page, gmail, "Device-tap (another phone) required")
+            log.warning("Device-tap challenge detected — attempting to switch to Authenticator (TOTP)")
+            switched = await _switch_to_totp_method(page, gmail)
+            if switched:
+                log.info("Successfully switched from Device-tap to TOTP for %s", gmail)
+                return None  # caller will now find the TOTP input and fill it
+            log.warning("Could not switch from Device-tap to TOTP — giving up")
+            await _save_challenge_debug(page, gmail, "Device-tap (another phone) required — switch to Authenticator failed")
             return LoginError.GOOGLE_CHALLENGE
 
         # Generic challenge we couldn't handle
@@ -1407,9 +1507,22 @@ async def _google_login_and_claim(
 
             # Check for 2FA prompt
             await asyncio.sleep(2)
-            totp_input = page.locator('input[type="tel"]:visible')
+
+            # Auto-handle Google post-password challenges (e.g. Device-tap → switch to TOTP)
+            try:
+                challenge_result = await _handle_post_password_challenges(page, gmail)
+                if challenge_result is not None:
+                    log.warning("Google challenge could not be auto-handled: %s", challenge_result)
+                    await on_progress(_build_progress(5, error=_format_login_error(challenge_result)))
+                    return False
+                # Give the page a moment to settle on the TOTP screen after switching method
+                await asyncio.sleep(2)
+            except Exception as _ch_exc:
+                log.warning("Challenge pre-handler failed (continuing): %s", _ch_exc)
+
+            totp_input = page.locator('input[type="tel"]:visible, input[name="totpPin"]:visible, input[autocomplete="one-time-code"]:visible')
             if await totp_input.count() > 0:
-                await totp_input.fill(totp_code)
+                await totp_input.first.fill(totp_code)
                 totp_next = page.get_by_role("button", name="Next")
                 if await totp_next.count() > 0:
                     await totp_next.click()
