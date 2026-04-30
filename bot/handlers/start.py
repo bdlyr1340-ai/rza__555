@@ -382,22 +382,42 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         except Exception as e:
             log.debug("Progress update display error: %s", e)
 
-    # ── Background ticker — refreshes elapsed time every 3 seconds ──
+    # ── Background ticker — refreshes elapsed time every 2 seconds ──
+    _tick_count = {"n": 0}
+
     async def _ticker() -> None:
+        log.info("⏱ TICKER STARTED for %s", gmail)
         try:
             while True:
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
+                _tick_count["n"] += 1
                 elapsed = time.time() - start_time
                 display = _build_pixel_progress(
                     gmail, _state["step"], elapsed, error=_state["error"]
                 )
-                await _safe_edit(display)
+                try:
+                    await ctx.bot.edit_message_text(
+                        chat_id=progress_msg.chat_id,
+                        message_id=progress_msg.message_id,
+                        text=display,
+                    )
+                    _state["last_text"] = display
+                    if _tick_count["n"] % 5 == 1:
+                        log.info("⏱ TICK #%d elapsed=%.1fs step=%d",
+                                 _tick_count["n"], elapsed, _state["step"])
+                except Exception as e:
+                    msg_str = str(e).lower()
+                    if "not modified" not in msg_str and "flood" not in msg_str:
+                        log.warning("⏱ TICKER edit failed (#%d): %s",
+                                    _tick_count["n"], e)
         except asyncio.CancelledError:
+            log.info("⏱ TICKER CANCELLED after %d ticks", _tick_count["n"])
             return
         except Exception as e:
-            log.debug("Ticker stopped: %s", e)
+            log.error("⏱ TICKER CRASHED: %s", e, exc_info=True)
 
     ticker_task = asyncio.create_task(_ticker())
+    log.info("⏱ Ticker task created: %s", ticker_task)
 
     result = {"success": False, "error": "خطأ غير متوقع"}
     try:
