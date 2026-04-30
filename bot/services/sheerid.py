@@ -1017,6 +1017,126 @@ GEMINI_STEPS = [
 ]
 
 
+# ── Login error codes (for clearer diagnostics) ──
+class LoginError:
+    EMAIL_NOT_FOUND = "EMAIL_NOT_FOUND"
+    WRONG_PASSWORD = "WRONG_PASSWORD"
+    WRONG_2FA = "WRONG_2FA"
+    NEEDS_2FA = "NEEDS_2FA"
+    GOOGLE_CHALLENGE = "GOOGLE_CHALLENGE"
+    CAPTCHA = "CAPTCHA"
+    IP_BLOCKED = "IP_BLOCKED"
+    TIMEOUT = "TIMEOUT"
+    ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
+    UNKNOWN = "UNKNOWN"
+
+
+_LOGIN_ERROR_HINTS = {
+    LoginError.EMAIL_NOT_FOUND: "تأكد أن الإيميل صحيح ومسجّل في Google.",
+    LoginError.WRONG_PASSWORD: "كلمة السر التي أدخلتها غير صحيحة. تأكد منها وأعد المحاولة.",
+    LoginError.WRONG_2FA: "رمز 2FA غير صحيح. تحقق من ضبط ساعة الجهاز ومن المفتاح السري Base32.",
+    LoginError.NEEDS_2FA: "الحساب يتطلب مفتاح المصادقة الثنائية (2FA Secret) — أرسله في الحقل المخصص.",
+    LoginError.GOOGLE_CHALLENGE: "Google يطلب التحقق من الهوية (إيميل احتياطي/هاتف) — جرّب من جهاز عادي أولاً.",
+    LoginError.CAPTCHA: "Google يطلب CAPTCHA — استخدم Browserless مع بروكسي سكني، أو انتظر قليلاً.",
+    LoginError.IP_BLOCKED: "Google يحجب IP السيرفر — استخدم بروكسي سكني (Residential).",
+    LoginError.TIMEOUT: "انتهت المهلة — البروكسي بطيء أو الاتصال ضعيف.",
+    LoginError.ACCOUNT_LOCKED: "الحساب مقفل أو معلّق من Google — استخدم حساباً آخر.",
+}
+
+
+def _format_login_error(code: str, detail: str = "") -> str:
+    """Format an error with code prefix and human-readable hint."""
+    hint = _LOGIN_ERROR_HINTS.get(code, "")
+    msg = f"[{code}] "
+    if detail:
+        msg += detail
+    if hint:
+        msg += f"\n💡 {hint}"
+    return msg
+
+
+async def _handle_post_password_challenges(page, gmail: str) -> Optional[str]:
+    """Try to auto-handle Google's post-password challenges.
+
+    Returns:
+        None if no challenge / handled successfully → continue to 2FA
+        Error code (str) if challenge cannot be handled → abort
+    """
+    try:
+        cur_url = (page.url or "").lower()
+        title = (await page.title() or "").lower()
+        try:
+            body = (await page.inner_text("body", timeout=5000) or "").lower()
+        except Exception:
+            body = ""
+
+        # CAPTCHA detection
+        if "recaptcha" in body or "i'm not a robot" in body or "captcha" in body:
+            log.warning("CAPTCHA detected on post-password page: %s", page.url)
+            return LoginError.CAPTCHA
+
+        # Account locked / disabled
+        if "account disabled" in body or "حسابك معطّل" in body or "account has been disabled" in body:
+            log.warning("Account locked/disabled: %s", gmail)
+            return LoginError.ACCOUNT_LOCKED
+
+        # IP blocked indicators
+        if "unusual traffic" in body or "حركة مرور غير عادية" in body:
+            log.warning("Unusual traffic block: %s", page.url)
+            return LoginError.IP_BLOCKED
+
+        # "Verify it's you" / "Was this you?" challenges
+        is_challenge_page = (
+            "challenge" in cur_url
+            or "verify it's you" in body
+            or "verify it’s you" in body
+            or "تأكيد هويتك" in body
+            or "هل هذا أنت" in body
+            or "was this you" in body
+        )
+
+        if not is_challenge_page:
+            return None  # No challenge detected — proceed normally
+
+        log.info("Google challenge detected on %s — attempting auto-handle", page.url)
+
+        # Attempt 1: Click "Yes, it's me" / "نعم، هذا أنا" confirmation buttons
+        yes_btn = page.locator(
+            "button:has-text('Yes'), "
+            "button:has-text('Yes, it'), "
+            "button:has-text('نعم'), "
+            "button:has-text(\"That's me\"), "
+            "button:has-text(\"That was me\"), "
+            "div[role='button']:has-text('Yes')"
+        )
+        try:
+            if await yes_btn.count() > 0:
+                await yes_btn.first.click()
+                log.info("Clicked 'Yes' confirmation button")
+                await asyncio.sleep(3)
+                # Re-read body to see if challenge cleared
+                try:
+                    body2 = (await page.inner_text("body", timeout=5000) or "").lower()
+                except Exception:
+                    body2 = ""
+                if "challenge" not in (page.url or "").lower() or "totp" in body2 or "code" in body2:
+                    return None  # cleared
+        except Exception as exc:
+            log.debug("Yes-button click failed: %s", exc)
+
+        # Attempt 2: Recovery email/phone challenge — we cannot answer this without user input
+        if "recovery" in body or "إيميل الاسترداد" in body or "phone number" in body:
+            log.warning("Recovery email/phone challenge — cannot auto-answer")
+            return LoginError.GOOGLE_CHALLENGE
+
+        # Generic challenge we couldn't handle
+        return LoginError.GOOGLE_CHALLENGE
+
+    except Exception as exc:
+        log.warning("Challenge handler crashed: %s", exc)
+        return None  # Don't block on handler errors
+
+
 def _build_progress(current_idx: int, error: str = "", detail: str = "") -> str:
     """Build a progress string showing all 9 steps with status."""
     lines: list[str] = []
@@ -1920,16 +2040,19 @@ async def verify_gemini_auto(
                 else:
                     # Check specific Google pages
                     if "find your Google Account" in page_text or "العثور على" in page_text:
-                        await on_progress(_build_progress(0, error="الإيميل غير موجود في Google"))
-                        result = {"success": False, "error": "الإيميل غير موجود في Google"}
+                        err_msg = _format_login_error(LoginError.EMAIL_NOT_FOUND)
+                        await on_progress(_build_progress(0, error=err_msg))
+                        result = {"success": False, "error": err_msg, "error_code": LoginError.EMAIL_NOT_FOUND}
                         return result
                     if "captcha" in page_text.lower() or "robot" in page_text.lower():
-                        await on_progress(_build_progress(1, error="Google يطلب CAPTCHA — جرّب لاحقاً"))
-                        result = {"success": False, "error": "Google يطلب CAPTCHA — جرّب بعد فترة"}
+                        err_msg = _format_login_error(LoginError.CAPTCHA)
+                        await on_progress(_build_progress(1, error=err_msg))
+                        result = {"success": False, "error": err_msg, "error_code": LoginError.CAPTCHA}
                         return result
                     if "verify" in cur_url.lower() or "challenge" in cur_url.lower():
-                        await on_progress(_build_progress(1, error="Google يطلب تحقق أمني إضافي"))
-                        result = {"success": False, "error": f"Google يطلب تحقق أمني إضافي ({title})"}
+                        err_msg = _format_login_error(LoginError.GOOGLE_CHALLENGE, title)
+                        await on_progress(_build_progress(1, error=err_msg))
+                        result = {"success": False, "error": err_msg, "error_code": LoginError.GOOGLE_CHALLENGE}
                         return result
     
                     # Try alternative password selectors
@@ -1960,8 +2083,9 @@ async def verify_gemini_auto(
                 err_text = await pwd_error.first.text_content()
                 if err_text and err_text.strip() and ("password" in err_text.lower() or "كلمة" in err_text):
                     log.warning("Google password error: %s", err_text.strip())
-                    await on_progress(_build_progress(1, error=f"خطأ: {err_text.strip()}"))
-                    result = {"success": False, "error": f"كلمة المرور خاطئة: {err_text.strip()}"}
+                    err_msg = _format_login_error(LoginError.WRONG_PASSWORD, err_text.strip())
+                    await on_progress(_build_progress(1, error=err_msg))
+                    result = {"success": False, "error": err_msg, "error_code": LoginError.WRONG_PASSWORD}
                     return result
     
             # Check page after password entry
@@ -1969,10 +2093,19 @@ async def verify_gemini_auto(
             if "signin/rejected" in cur_url.lower():
                 title = await page.title()
                 log.warning("Google rejected sign-in: URL=%s", cur_url)
-                await on_progress(_build_progress(1, error=f"Google رفض تسجيل الدخول: {title}"))
-                result = {"success": False, "error": f"Google رفض تسجيل الدخول: {title}"}
+                err_msg = _format_login_error(LoginError.GOOGLE_CHALLENGE, f"Google رفض تسجيل الدخول: {title}")
+                await on_progress(_build_progress(1, error=err_msg))
+                result = {"success": False, "error": err_msg, "error_code": LoginError.GOOGLE_CHALLENGE}
                 return result
-    
+
+            # ── NEW: Handle "Is this you?" / CAPTCHA / challenge pages before 2FA ──
+            challenge_code = await _handle_post_password_challenges(page, gmail)
+            if challenge_code:
+                err_msg = _format_login_error(challenge_code)
+                await on_progress(_build_progress(1, error=err_msg))
+                result = {"success": False, "error": err_msg, "error_code": challenge_code}
+                return result
+
             await on_progress(_build_progress(2, detail="تم قبول كلمة السر، فحص المصادقة الثنائية..."))
     
             # ── Step 3: المصادقة الثنائية — handle 2FA ──
@@ -1992,30 +2125,52 @@ async def verify_gemini_auto(
     
             if await totp_input.count() > 0:
                 if totp_obj:
-                    totp_code = totp_obj.now()  # generate fresh code right before use
-                    await totp_input.first.fill(totp_code)
-                    # Find and click Next button
-                    totp_next = page.locator("#totpNext")
-                    if await totp_next.count() == 0:
-                        totp_next = page.get_by_role("button", name="Next")
-                    if await totp_next.count() > 0:
-                        await totp_next.click()
-                    await asyncio.sleep(4)
-    
-                    # Check for 2FA error
-                    totp_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
-                    if await totp_error.count() > 0:
-                        err_text = await totp_error.first.text_content()
-                        if err_text and err_text.strip():
-                            log.warning("Google 2FA error: %s", err_text.strip())
-                            await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
-                            result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
-                            return result
-    
+                    # Try TOTP entry up to 2 times — handles clock skew (waits 32s for fresh window)
+                    _totp_max_attempts = 2
+                    _totp_last_err = ""
+                    for _totp_try in range(_totp_max_attempts):
+                        totp_code = totp_obj.now()  # generate fresh code right before use
+                        # Re-locate input on retry (page may have refreshed the field)
+                        totp_input_now = page.locator(
+                            'input[type="tel"]:visible, input[id="totpPin"]:visible, '
+                            'input[name="totpPin"]:visible'
+                        )
+                        if await totp_input_now.count() == 0:
+                            break  # input gone → page advanced (success)
+                        await totp_input_now.first.fill("")
+                        await totp_input_now.first.fill(totp_code)
+                        log.info("TOTP attempt %d/%d for %s", _totp_try + 1, _totp_max_attempts, gmail)
+                        totp_next = page.locator("#totpNext")
+                        if await totp_next.count() == 0:
+                            totp_next = page.get_by_role("button", name="Next")
+                        if await totp_next.count() > 0:
+                            await totp_next.click()
+                        await asyncio.sleep(4)
+
+                        # Check for 2FA error
+                        totp_error = page.locator("[jsname='B34EJ'], .o6cuMc, .dEOOab, .OyEIQ")
+                        if await totp_error.count() > 0:
+                            err_text = await totp_error.first.text_content()
+                            if err_text and err_text.strip():
+                                _totp_last_err = err_text.strip()
+                                log.warning("2FA attempt %d failed: %s", _totp_try + 1, _totp_last_err)
+                                if _totp_try < _totp_max_attempts - 1:
+                                    await on_progress(_build_progress(2, detail=f"رمز 2FA رُفض، انتظار 32ث للحصول على رمز جديد..."))
+                                    await asyncio.sleep(32)  # wait for next TOTP window
+                                    continue
+                                # Final failure
+                                err_msg = _format_login_error(LoginError.WRONG_2FA, _totp_last_err)
+                                await on_progress(_build_progress(2, error=err_msg))
+                                result = {"success": False, "error": err_msg, "error_code": LoginError.WRONG_2FA}
+                                return result
+                        # No error → success, exit loop
+                        break
+
                     await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
                 else:
-                    await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أعد المحاولة وأرسل مفتاح 2FA السري"))
-                    result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
+                    err_msg = _format_login_error(LoginError.NEEDS_2FA)
+                    await on_progress(_build_progress(2, error=err_msg))
+                    result = {"success": False, "error": err_msg, "error_code": LoginError.NEEDS_2FA}
                     return result
             elif is_2fa_page:
                 # 2FA page but no TOTP input — phone prompt, security key, etc.
@@ -2100,18 +2255,21 @@ async def verify_gemini_auto(
                                     err_text = await totp_err.first.text_content()
                                     if err_text and err_text.strip():
                                         log.warning("Google 2FA error (alt): %s", err_text.strip())
-                                        await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
-                                        result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
+                                        err_msg = _format_login_error(LoginError.WRONG_2FA, err_text.strip())
+                                        await on_progress(_build_progress(2, error=err_msg))
+                                        result = {"success": False, "error": err_msg, "error_code": LoginError.WRONG_2FA}
                                         return result
-    
+
                                 await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
                             elif totp_obj:
-                                await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
-                                result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
+                                err_msg = _format_login_error(LoginError.NEEDS_2FA, "لم يتم العثور على حقل إدخال رمز 2FA")
+                                await on_progress(_build_progress(2, error=err_msg))
+                                result = {"success": False, "error": err_msg, "error_code": LoginError.NEEDS_2FA}
                                 return result
                             else:
-                                await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أرسل مفتاح 2FA السري"))
-                                result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
+                                err_msg = _format_login_error(LoginError.NEEDS_2FA)
+                                await on_progress(_build_progress(2, error=err_msg))
+                                result = {"success": False, "error": err_msg, "error_code": LoginError.NEEDS_2FA}
                                 return result
                         else:
                             # No authenticator option found
@@ -2120,8 +2278,9 @@ async def verify_gemini_auto(
                                 log.warning("No authenticator option. Available: %s", all_options[:5])
                             except Exception:
                                 log.warning("No authenticator option and couldn't list alternatives")
-                            await on_progress(_build_progress(2, error="Google Authenticator غير مفعّل على هذا الحساب"))
-                            result = {"success": False, "error": "Google Authenticator غير مفعّل — فعّله من إعدادات الحساب أولاً"}
+                            err_msg = _format_login_error(LoginError.NEEDS_2FA, "Google Authenticator غير مفعّل على هذا الحساب — فعّله من إعدادات الحساب")
+                            await on_progress(_build_progress(2, error=err_msg))
+                            result = {"success": False, "error": err_msg, "error_code": LoginError.NEEDS_2FA}
                             return result
                     else:
                         # No "Try another way" — we may already be on the selection page
@@ -2173,18 +2332,21 @@ async def verify_gemini_auto(
                                     err_text = await totp_err3.first.text_content()
                                     if err_text and err_text.strip():
                                         log.warning("Google 2FA error (selection): %s", err_text.strip())
-                                        await on_progress(_build_progress(2, error=f"رمز 2FA خاطئ: {err_text.strip()}"))
-                                        result = {"success": False, "error": f"رمز 2FA خاطئ: {err_text.strip()}"}
+                                        err_msg = _format_login_error(LoginError.WRONG_2FA, err_text.strip())
+                                        await on_progress(_build_progress(2, error=err_msg))
+                                        result = {"success": False, "error": err_msg, "error_code": LoginError.WRONG_2FA}
                                         return result
-    
+
                                 await on_progress(_build_progress(3, detail="تم تسجيل الدخول بنجاح!"))
                             elif totp_obj:
-                                await on_progress(_build_progress(2, error="لم يتم العثور على حقل إدخال رمز 2FA"))
-                                result = {"success": False, "error": "لم يتم العثور على حقل إدخال رمز 2FA"}
+                                err_msg = _format_login_error(LoginError.NEEDS_2FA, "لم يتم العثور على حقل إدخال رمز 2FA")
+                                await on_progress(_build_progress(2, error=err_msg))
+                                result = {"success": False, "error": err_msg, "error_code": LoginError.NEEDS_2FA}
                                 return result
                             else:
-                                await on_progress(_build_progress(2, error="الحساب يتطلب 2FA — أرسل مفتاح 2FA السري"))
-                                result = {"success": False, "error": "الحساب يتطلب مفتاح المصادقة الثنائية السري (2FA Secret Key)"}
+                                err_msg = _format_login_error(LoginError.NEEDS_2FA)
+                                await on_progress(_build_progress(2, error=err_msg))
+                                result = {"success": False, "error": err_msg, "error_code": LoginError.NEEDS_2FA}
                                 return result
                         else:
                             log.warning("No 'Try another way' and no authenticator option on page")
@@ -2193,8 +2355,9 @@ async def verify_gemini_auto(
                                 log.warning("Available 2FA options: %s", all_opts[:5])
                             except Exception:
                                 pass
-                            await on_progress(_build_progress(2, error="Google Authenticator غير مفعّل على هذا الحساب"))
-                            result = {"success": False, "error": "Google Authenticator غير مفعّل — فعّله من إعدادات الحساب أولاً"}
+                            err_msg = _format_login_error(LoginError.NEEDS_2FA, "Google Authenticator غير مفعّل على هذا الحساب — فعّله من إعدادات الحساب")
+                            await on_progress(_build_progress(2, error=err_msg))
+                            result = {"success": False, "error": err_msg, "error_code": LoginError.NEEDS_2FA}
                             return result
                 except Exception as taw_exc:
                     log.warning("Error in 'Try another way' flow: %s", taw_exc)
@@ -2337,10 +2500,12 @@ async def verify_gemini_auto(
             if final_step == "success" and redirect_url:
                 await on_progress(_build_progress(6, detail="تم التحقق بنجاح! المطالبة بالعرض..."))
             elif final_step in ("docReview", "pending"):
-                # Poll SheerID until verification is approved or rejected (max 5 minutes)
-                await on_progress(_build_progress(6, detail=f"التحقق قيد المراجعة ({final_step})... انتظار الموافقة"))
-                max_polls = 30
-                poll_interval = 10
+                # Poll SheerID until verification is approved or rejected
+                # Configurable via env: SHEERID_POLL_MINUTES (default 15) and SHEERID_POLL_INTERVAL (default 10s)
+                _poll_minutes = int(os.getenv("SHEERID_POLL_MINUTES", "15"))
+                poll_interval = int(os.getenv("SHEERID_POLL_INTERVAL", "10"))
+                max_polls = max(1, (_poll_minutes * 60) // poll_interval)
+                await on_progress(_build_progress(6, detail=f"التحقق قيد المراجعة ({final_step})... انتظار الموافقة (حتى {_poll_minutes} دقيقة)"))
                 for poll_i in range(max_polls):
                     await asyncio.sleep(poll_interval)
                     poll_data, poll_status = await _api_request(client, "GET", f"/verification/{vid}")
@@ -2365,7 +2530,7 @@ async def verify_gemini_auto(
                 else:
                     # Timed out waiting for approval — return failure so credit is refunded
                     await on_progress(_build_progress(6, error="انتهت مهلة الانتظار — التحقق لا زال قيد المراجعة"))
-                    result = {"success": False, "error": f"SheerID لم يوافق خلال 5 دقائق (الحالة: {final_step}) — جرّب مرة أخرى"}
+                    result = {"success": False, "error": f"SheerID لم يوافق خلال {_poll_minutes} دقيقة (الحالة: {final_step}) — جرّب مرة أخرى لاحقاً"}
                     return result
             elif final_step == "error":
                 err_ids = data.get("errorIds", [])
