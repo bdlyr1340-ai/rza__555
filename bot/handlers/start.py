@@ -238,7 +238,8 @@ _STEP_NAMES = [
 
 
 def _build_pixel_progress(gmail: str, current_step: int, elapsed_secs: float,
-                           success: bool = False, error: str = "") -> str:
+                           success: bool = False, error: str = "",
+                           detail: str = "") -> str:
     """Build 10-step progress text matching reference bot style."""
     lines = ["🤖 Pixel Automation", f"📧 {gmail}", "────────────────────────"]
     for i, name in enumerate(_STEP_NAMES):
@@ -254,9 +255,11 @@ def _build_pixel_progress(gmail: str, current_step: int, elapsed_secs: float,
         lines.append(f"{icon} {step_num:>2}. {name}")
     lines.append("────────────────────────")
     if success:
-        lines.append("🎉 Success!")
+        lines.append("🎉 نجح التفعيل!")
     elif error:
-        lines.append(f"❌ {error}")
+        lines.append(f"❌ {error[:120]}")
+    elif detail:
+        lines.append(f"💬 {detail[:120]}")
     mins = int(elapsed_secs) // 60
     secs = int(elapsed_secs) % 60
     lines.append(f"⏱ Elapsed: {mins:02d}:{secs:02d}")
@@ -321,6 +324,7 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     _state = {
         "step": 0,
         "error": "",
+        "detail": "",
         "last_text": _build_pixel_progress(gmail, 0, 0),
     }
     _edit_lock = asyncio.Lock()
@@ -373,11 +377,22 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
                 if len(err) > 100:
                     err = err[:100] + "…"
 
+            # Extract detail line from _build_progress output (ℹ️ prefix)
+            detail = ""
+            for line in text.splitlines():
+                if line.startswith("ℹ️") or line.startswith("💬"):
+                    detail = line.lstrip("ℹ️💬 ").strip()
+                    break
+            # If the whole text is short and not a step list, treat as detail
+            if not detail and len(text) < 150 and "✅" not in text and "⬜" not in text:
+                detail = text.strip()
+
             _state["step"] = step
             _state["error"] = err
+            _state["detail"] = detail
 
             elapsed = time.time() - start_time
-            display = _build_pixel_progress(gmail, step, elapsed, error=err)
+            display = _build_pixel_progress(gmail, step, elapsed, error=err, detail=detail)
             await _safe_edit(display)
         except Exception as e:
             log.debug("Progress update display error: %s", e)
@@ -393,7 +408,8 @@ async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
                 _tick_count["n"] += 1
                 elapsed = time.time() - start_time
                 display = _build_pixel_progress(
-                    gmail, _state["step"], elapsed, error=_state["error"]
+                    gmail, _state["step"], elapsed,
+                    error=_state["error"], detail=_state["detail"]
                 )
                 try:
                     await ctx.bot.edit_message_text(
