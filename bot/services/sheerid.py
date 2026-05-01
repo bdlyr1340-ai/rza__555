@@ -2674,15 +2674,18 @@ async def verify_gemini_auto(
                 "lastName": last,
                 "birthDate": dob,
                 "email": student_email,
-                "phoneNumber": "",
-                "organization": {"id": uni["id"], "idExtended": str(uni["id"]), "name": uni["name"]},
+                # phoneNumber deliberately omitted — empty string causes HTTP 400
+                "organization": {
+                    "id": uni["id"],
+                    "name": uni["name"],
+                    # idExtended omitted — not required and can cause 400
+                },
                 "deviceFingerprintHash": fingerprint,
                 "locale": "en-US",
                 "metadata": {
                     "marketConsentValue": False,
                     "verificationId": vid,
                     "refererUrl": referer,
-                    "flags": '{"collect-info-step-email-first":"default","doc-upload-considerations":"default","doc-upload-may24":"default","doc-upload-redesign-use-legacy-message-keys":false,"docUpload-assertion-checklist":"default","font-size":"default","include-cvec-field-france-student":"not-labeled-optional"}',
                     "submissionOptIn": (
                         "By submitting the personal information above, I acknowledge that my "
                         "personal information is being collected under the privacy policy of the "
@@ -2691,17 +2694,23 @@ async def verify_gemini_auto(
                 },
             }
 
+            import json as _json_log
+            log.info("SheerID student info body: %s", _json_log.dumps(body, default=str)[:600])
+
             data, status = await _api_request(
                 client, "POST",
                 f"/verification/{vid}/step/collectStudentPersonalInfo",
                 body,
             )
-            log.info("SheerID student info: status=%s step=%s", status, data.get("currentStep"))
+            log.info("SheerID student info: status=%s response=%s", status, str(data)[:500])
             if status != 200:
                 err_msg = f"فشل إرسال بيانات الطالب: HTTP {status}"
-                log.error("SheerID student info failed: %s %s", status, str(data)[:500])
+                log.error("SheerID student info FAILED body=%s response=%s",
+                          _json_log.dumps(body, default=str)[:800], str(data)[:500])
                 await on_progress(_build_progress(4, error=err_msg))
-                result = {"success": False, "error": err_msg}
+                dbg = await _save_sheerid_debug(page, gmail,
+                    f"SheerID HTTP {status} on student info", api_response=data)
+                result = {"success": False, "error": err_msg, "debug": dbg}
                 return result
             if data.get("currentStep") == "error":
                 err_ids = data.get("errorIds", [])
